@@ -27,6 +27,7 @@ float32 opening_height_estimate_m
 float32 leg_center_separation_m
 float32 left_forward_m
 float32 right_forward_m
+# NaN when measured by the independent RGB-D tracker without fresh YOLO inference.
 float32 yolo_confidence
 float32 rgb_depth_delta_ms
 uint32 left_depth_samples

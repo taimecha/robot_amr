@@ -1,35 +1,34 @@
 #!/usr/bin/env python3
-"""Publish experimental pallet opening geometry from YOLO RGB and Astra depth.
+"""Measure pallet opening from live registered RGB-D; no YOLO/model imports.
 
-This node publishes measurements only. It never commands the robot. A valid
-message means that the current image passed geometric checks, not that the
-camera calibration or robot insertion path has been verified for motion.
+YOLO supplies an initial mask via /pallet/detection. This process then tracks
+the two front legs in each new RGB image and measures CURRENT registered Depth.
+It publishes measurements and previews only, never robot commands.
 """
-
-import argparse
 from collections import deque
+import json
 import math
 from pathlib import Path
 import sys
 import threading
 import time
 
+import cv2
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
-from rclpy.qos import QoSProfile, HistoryPolicy, ReliabilityPolicy
-from rclpy.utilities import remove_ros_args
-import torch
-from ultralytics import YOLO
-import yaml
+from rclpy.qos import QoSProfile, ReliabilityPolicy
+from sensor_msgs.msg import CompressedImage
+from std_msgs.msg import String
+from rclpy.qos import DurabilityPolicy
+from detected_pallets_interfaces.msg import PalletDetection, PalletTarget
 
-from detected_pallets_interfaces.msg import PalletTarget
-
-PROJECT = Path(__file__).resolve().parents[1]
-sys.path.insert(0, str(PROJECT))
-from yolo_depth import (CameraReceiver, OPTICAL_FRAME, SHAPE,
-                        decode_image, stamp_ns, validate_intrinsics)
-from pallet_target_geometry import measure_pallet_target
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from astra_rgbd_stream import (CameraReceiver, OPTICAL_FRAME, SHAPE, decode_image,
+                               stamp_ns, validate_intrinsics)
+from pallet_perception_config import parse_args
+from pallet_rgbd_estimator import RGBDTargetEstimator
+from pallet_messages import empty_message
 
 
 class TargetNode(CameraReceiver):
@@ -38,10 +37,71 @@ class TargetNode(CameraReceiver):
         self.last_source_log = float('inf')
         self.pending_images = {'rgb': deque(maxlen=12), 'depth': deque(maxlen=16)}
         self.pending_color_info = deque(maxlen=16)
-        self.publisher = self.create_publisher(
-            PalletTarget, '/pallet/target',
-            QoSProfile(history=HistoryPolicy.KEEP_LAST, depth=1,
-                       reliability=ReliabilityPolicy.RELIABLE))
+        self.pending_seed = None
+        self.last_seed_stamp_ns = 0
+        self.recognition_start_ns = 0
+        self.recognition_reset_pending = False
+        self.info_wait_started_at = None
+        self.publisher = self.create_publisher(PalletTarget, '/pallet/target', 1)
+        self.preview_publisher = self.create_publisher(
+            CompressedImage, '/pallet/preview/compressed',
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.BEST_EFFORT))
+        self.seed_sub = self.create_subscription(PalletDetection, '/pallet/detection', self.on_seed, 1)
+        self.session_sub = self.create_subscription(String, '/pallet/recognition/status', self.on_session,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+
+    def on_session(self, msg):
+        try:
+            state = json.loads(msg.data)
+            start = state.get('started_ros_s')
+            if not isinstance(start, (float, int)) or not math.isfinite(start) or start <= 0:
+                return
+            start_ns = int(start*1e9)
+        except (ValueError, AttributeError):
+            return
+        with self.lock:
+            if start_ns > self.recognition_start_ns:
+                self.recognition_start_ns = start_ns
+                self.recognition_reset_pending = True
+                self.pending_seed = None
+
+    def take_session_reset(self):
+        with self.lock:
+            reset = self.recognition_reset_pending
+            self.recognition_reset_pending = False
+            return reset
+
+    def on_seed(self, msg):
+        if msg.valid and stamp_ns(msg) > max(self.last_seed_stamp_ns, self.recognition_start_ns):
+            with self.lock:
+                self.pending_seed = msg
+                self.last_seed_stamp_ns = stamp_ns(msg)
+
+    def take_seed(self, rgb_stamp_ns):
+        with self.lock:
+            msg = self.pending_seed
+            if msg is None or stamp_ns(msg) > rgb_stamp_ns:
+                return None
+            self.pending_seed = None
+        age = (self.get_clock().now().nanoseconds - stamp_ns(msg)) / 1e9
+        if not -.1 <= age <= getattr(self.args, 'max_seed_age_ms', 1000.) / 1000:
+            return None
+        if (msg.header.frame_id != OPTICAL_FRAME or stamp_ns(msg.rgb) != stamp_ns(msg)
+                or stamp_ns(msg.mask) != stamp_ns(msg)
+                or msg.rgb.header.frame_id != OPTICAL_FRAME
+                or msg.mask.header.frame_id != OPTICAL_FRAME):
+            return None
+        mask = cv2.imdecode(np.frombuffer(msg.mask.data, np.uint8), cv2.IMREAD_GRAYSCALE)
+        if (mask is None or mask.shape != SHAPE or msg.mask.format != 'png'
+                or msg.class_name.strip().lower() not in ('pallets', 'emty pallet')
+                or not np.isfinite(msg.bbox_xyxy).all() or not 0 <= msg.confidence <= 1):
+            return None
+        image = decode_image(msg.rgb)
+        if image.shape[:2] != SHAPE:
+            return None
+        return dict(rgb=image, mask=mask > 0, bbox=np.array(msg.bbox_xyxy),
+                    stamp_ns=stamp_ns(msg), class_name=msg.class_name, confidence=msg.confidence)
 
     def receive(self, stream, msg):
         with self.lock:
@@ -54,7 +114,7 @@ class TargetNode(CameraReceiver):
                 self.pending_color_info.append((msg, time.monotonic()))
 
     def take_pair(self):
-        """Match the freshest RGB/Depth pair within 50 ms, keeping short queues."""
+        """Prefer a complete RGB/Depth/CameraInfo set, allowing callback skew."""
         with self.lock:
             now = time.monotonic()
             max_age = self.args.max_age_ms * 0.001
@@ -66,27 +126,44 @@ class TargetNode(CameraReceiver):
                 self.pending_color_info.popleft()
             rgb_queue = self.pending_images['rgb']
             depth_queue = self.pending_images['depth']
+            requires_info_sync = len(self.source_diagnostics.get('endpoints', {}).get('rgb', [])) == 2
             candidates = []
+            complete = []
             for ri, (rgb, rt) in enumerate(rgb_queue):
                 if not stamp_ns(rgb):
                     continue
                 for di, (depth, dt) in enumerate(depth_queue):
                     delta_ms = (stamp_ns(depth) - stamp_ns(rgb)) / 1e6
                     if stamp_ns(depth) and abs(delta_ms) <= self.args.max_delta_ms:
-                        candidates.append((max(rt, dt), -abs(delta_ms), ri, di, delta_ms))
+                        info = min(self.pending_color_info,
+                                   key=lambda entry: abs(stamp_ns(entry[0])-stamp_ns(rgb)))[0] \
+                            if self.pending_color_info else self.infos.get('rgb')
+                        candidate = (max(rt, dt), -abs(delta_ms), ri, di, delta_ms, info)
+                        candidates.append(candidate)
+                        if (info is not None and (not requires_info_sync or
+                                (stamp_ns(info) and abs(stamp_ns(info)-stamp_ns(rgb)) <= 50_000_000))):
+                            complete.append(candidate)
             if not candidates:
                 self.status = 'Waiting for synchronized RGB / Depth'
+                self.info_wait_started_at = None
                 return None
-            _, _, ri, di, delta_ms = max(candidates)
+            if not complete:
+                self.status = 'SYNC_WAIT: waiting for matching RGB CameraInfo (50 ms)'
+                if self.info_wait_started_at is None:
+                    self.info_wait_started_at = now
+                if now-self.info_wait_started_at < .05:
+                    return None
+                # No matching info arrived. Return a fresh RGB-D frame so the
+                # visual tracker advances, while validate_intrinsics rejects
+                # its geometry. Never relax the CameraInfo timing gate.
+            self.info_wait_started_at = None
+            _, _, ri, di, delta_ms, info = max(complete or candidates, key=lambda c: c[:5])
             rgb, _ = rgb_queue[ri]
             depth, _ = depth_queue[di]
             for _ in range(ri + 1):
                 rgb_queue.popleft()
             for _ in range(di + 1):
                 depth_queue.popleft()
-            info = min(self.pending_color_info,
-                       key=lambda entry: abs(stamp_ns(entry[0]) - stamp_ns(rgb)))[0] \
-                if self.pending_color_info else self.infos.get('rgb')
             registration = dict(self.registration)
             registration['source_diagnostics'] = dict(self.source_diagnostics)
             registration['pair_publisher_gids'] = dict(self.last_source_gid)
@@ -98,163 +175,135 @@ class TargetNode(CameraReceiver):
             self.status = f'Accepted dt={delta_ms:+.2f} ms'
             return rgb, depth, delta_ms, info, self.infos.get('depth'), registration
 
-
-def empty_message(stamp, status, delta_ms=math.nan):
-    msg = PalletTarget()
-    msg.header.stamp = stamp
-    msg.header.frame_id = OPTICAL_FRAME
-    msg.valid = False
-    msg.status = status
-    for name in ("camera_forward_m", "chassis_front_forward_m", "opening_lateral_m", "face_yaw_rad",
-                 "entry_heading_rad", "opening_width_m", "opening_height_estimate_m", "leg_center_separation_m",
-                 "left_forward_m", "right_forward_m", "yolo_confidence"):
-        setattr(msg, name, math.nan)
-    msg.rgb_depth_delta_ms = float(delta_ms)
-    return msg
-
-
-def confirmed(current, previous):
-    return (abs(current['camera_forward_m'] - previous['camera_forward_m']) < 0.06
-            and abs(current['opening_lateral_m'] - previous['opening_lateral_m']) < 0.035
-            and abs(current['face_yaw_rad'] - previous['face_yaw_rad']) < math.radians(5))
+    def preview(self, header, image, estimator, msg):
+        if not self.preview_publisher.get_subscription_count():
+            return
+        view = image.copy()
+        if estimator.tracker.active:
+            contours, _ = cv2.findContours(estimator.tracker.mask, cv2.RETR_EXTERNAL,
+                                           cv2.CHAIN_APPROX_SIMPLE)
+            cv2.drawContours(view, contours, -1, (0, 220, 80), 1)
+            x1, y1, x2, y2 = np.rint(estimator.tracker.bbox).astype(int)
+            cv2.rectangle(view, (x1, y1), (x2, y2), (0, 220, 80), 1)
+        # Measurements and status live in the web cards, not over camera pixels.
+        ok, encoded = cv2.imencode('.jpg', view, [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if ok:
+            self.preview_publisher.publish(CompressedImage(header=header, format='jpeg', data=encoded.tobytes()))
 
 
-def process_pair(pair, model, args, node, history):
+def process_pair(pair, args, node, estimator):
     rgb_msg, depth_msg, delta_ms, color_info, _, registration = pair
     stamp = rgb_msg.header.stamp
-    if (rgb_msg.height, rgb_msg.width) != SHAPE or (depth_msg.height, depth_msg.width) != SHAPE:
-        raise ValueError('camera resolution is not 640x480')
-    age_s = (node.get_clock().now().nanoseconds - stamp_ns(rgb_msg)) * 1e-9
-    if not -0.1 <= age_s <= args.max_result_age_ms * 0.001:
-        raise ValueError(f'RGB image age {age_s:.3f} s outside limit')
+    if stamp_ns(rgb_msg) < getattr(node, 'recognition_start_ns', 0):
+        estimator.history.clear()
+        raise ValueError('Waiting for RGB captured after recognition started')
+    age = (node.get_clock().now().nanoseconds - stamp_ns(rgb_msg)) / 1e9
+    if not -.1 <= age <= args.max_result_age_ms / 1000:
+        estimator.history.clear()
+        raise ValueError('RGB-D pair outside result age limit')
+    if (rgb_msg.header.frame_id != OPTICAL_FRAME or (rgb_msg.height, rgb_msg.width) != SHAPE):
+        estimator.reset('RGB source frame or resolution changed')
+        raise ValueError('RGB source frame or resolution changed')
+    image = decode_image(rgb_msg)
     intrinsics, status = validate_intrinsics(rgb_msg, depth_msg, color_info, registration)
     if intrinsics is None:
-        raise ValueError(status)
-    image = decode_image(rgb_msg)
+        # A late CameraInfo packet must not erase the visual target. No pose is
+        # emitted until current RGB-D metadata and all depth gates pass again.
+        estimator.suspend_measurement(image, stamp_ns(rgb_msg))
+        raise ValueError('SYNC_WAIT: ' + status)
     depth = decode_image(depth_msg, depth=True)
-    results = model.predict(image, conf=args.conf, imgsz=640,
-                            retina_masks=True, device=args.device, verbose=False)[0]
-    pallet_indices = [i for i, cls in enumerate(results.boxes.cls)
-                      if results.names[int(cls.item())].strip().lower() in ('pallets', 'emty pallet')]
-    if results.masks is None or len(pallet_indices) != 1:
-        raise ValueError(f'expected one pallet, found {len(pallet_indices)}')
-    pallet_index = pallet_indices[0]
-    mask = results.masks.data[pallet_index].cpu().numpy().astype(bool)
-    bbox = results.boxes.xyxy[pallet_index].cpu().numpy()
-    measurement = measure_pallet_target(
-        mask, bbox, depth, intrinsics, pitch_deg=args.pitch_deg,
-        inverse_depth_x_slope=args.inverse_depth_x_slope,
-        reference_u=args.reference_u,
-        camera_ahead_of_chassis_m=args.camera_ahead_of_chassis_m,
-        expected_opening_width_m=args.expected_opening_width_m,
-        opening_width_tolerance_m=args.opening_width_tolerance_m)
-    # A slow inference result is never published as a fresh target.
-    age_s = (node.get_clock().now().nanoseconds - stamp_ns(rgb_msg)) * 1e-9
-    if not -0.1 <= age_s <= args.max_result_age_ms * 0.001:
-        raise ValueError(f'result age {age_s:.3f} s outside limit')
-    if history and not confirmed(measurement, history[-1]):
-        history.clear()
-    history.append(measurement)
-    if len(history) < args.confirm_frames:
-        raise ValueError(f'confirming front legs {len(history)}/{args.confirm_frames}')
-    msg = empty_message(stamp, 'MEASURED: verify physical calibration before robot motion', delta_ms)
+    seed = node.take_seed(stamp_ns(rgb_msg))
+    measurement = estimator.process(image, depth, intrinsics, stamp_ns(rgb_msg), seed)
+    age = (node.get_clock().now().nanoseconds - stamp_ns(rgb_msg)) / 1e9
+    if not -.1 <= age <= args.max_result_age_ms / 1000:
+        estimator.history.clear()
+        raise ValueError('RGB-D processing result outside age limit')
+    status = (f'TRACKED_RGBD; class={estimator.seed_class}; '
+              f'seed_age_s={(stamp_ns(rgb_msg)-estimator.seed_stamp_ns)/1e9:.1f}')
+    if args.measurement_bias is not None:
+        status += '; target_bias_applied'
+        heading_bias = measurement.get('applied_heading_bias_deg',args.measurement_bias['face_yaw_bias_deg'])
+        status += (f'; heading_bias_deg={heading_bias:.6f}'
+                   f'; pre_bias_entry_deg={math.degrees(measurement["entry_heading_rad"])+heading_bias:.6f}')
+    if measurement.get('heading_source'):
+        status += (f'; heading_source={measurement["heading_source"]}'
+                   f'; heading_depth_x_slope={measurement["heading_depth_x_slope"]:.9f}')
+    msg = empty_message(stamp, status, delta_ms)
     msg.valid = True
-    for name in ('camera_forward_m', 'chassis_front_forward_m', 'opening_lateral_m', 'face_yaw_rad',
-                 'entry_heading_rad', 'opening_width_m', 'opening_height_estimate_m',
-                 'leg_center_separation_m',
-                 'left_forward_m', 'right_forward_m', 'left_depth_samples',
-                 'right_depth_samples'):
+    for name in ('camera_forward_m', 'chassis_front_forward_m', 'opening_lateral_m',
+                 'face_yaw_rad', 'entry_heading_rad', 'opening_width_m',
+                 'opening_height_estimate_m', 'leg_center_separation_m',
+                 'left_forward_m', 'right_forward_m', 'left_depth_samples', 'right_depth_samples'):
         setattr(msg, name, measurement[name])
-    msg.yolo_confidence = float(results.boxes.conf[pallet_index].item())
+    msg.yolo_confidence = math.nan
     return msg
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--model', type=Path, default=PROJECT / 'models/best_v3.pt')
-    parser.add_argument('--correction-yaml', type=Path,
-                        default=PROJECT / 'config/calibration/astra_pro_depth_x_skew_preview.yaml')
-    parser.add_argument('--device', default='0' if torch.cuda.is_available() else 'cpu')
-    parser.add_argument('--conf', type=float, default=0.60)
-    parser.add_argument('--pitch-deg', type=float, default=20.0)
-    parser.add_argument('--camera-ahead-of-chassis-m', type=float, default=0.0665,
-                        help='Measured front of lens ahead of chassis front, metres')
-    parser.add_argument('--expected-opening-width-m', type=float, default=0.252)
-    parser.add_argument('--opening-width-tolerance-m', type=float, default=0.08)
-    parser.add_argument('--confirm-frames', type=int, default=3)
-    parser.add_argument('--max-delta-ms', type=float, default=50.0)
-    parser.add_argument('--max-age-ms', type=float, default=250.0)
-    parser.add_argument('--max-result-age-ms', type=float, default=500.0)
-    args = parser.parse_args(remove_ros_args(sys.argv)[1:])
-    if not args.model.is_file() or not args.correction_yaml.is_file():
-        parser.error('Model or depth correction YAML missing')
-    if not 0 <= args.conf <= 1 or args.confirm_frames < 1:
-        parser.error('Invalid confidence or confirmation frame count')
-    if not 0 < args.max_delta_ms <= 50 or args.max_age_ms <= 0 or args.max_result_age_ms <= 0:
-        parser.error('Invalid image timing limit')
-    if not all(math.isfinite(v) for v in (args.pitch_deg, args.expected_opening_width_m,
-                                          args.camera_ahead_of_chassis_m)):
-        parser.error('Invalid geometry parameter')
-    parameters = yaml.safe_load(args.correction_yaml.read_text())['/spatial_depth_cloud']['ros__parameters']
-    args.inverse_depth_x_slope = float(parameters['inverse_depth_x_slope'])
-    args.reference_u = float(parameters['reference_u'])
-    print(f'Pallet measurement: model={args.model.name}, device={args.device}, '
-          f'pitch={args.pitch_deg:g} deg, correction={args.inverse_depth_x_slope:g} 1/m/pixel',
-          flush=True)
-    model = YOLO(str(args.model))
-    if model.task != 'segment':
-        parser.error('Expected a YOLO segmentation model')
-    model.predict(np.zeros((*SHAPE, 3), np.uint8), conf=args.conf, imgsz=640,
-                  retina_masks=True, device=args.device, verbose=False)
-
-    rclpy.init(args=sys.argv)
+    args = parse_args('tracker')
+    cv2.setNumThreads(1)
+    rclpy.init()
     node = TargetNode(args)
+    estimator = RGBDTargetEstimator(args)
     executor = SingleThreadedExecutor()
     executor.add_node(node)
-    receiver = threading.Thread(target=executor.spin, daemon=True)
-    receiver.start()
-    history = deque(maxlen=args.confirm_frames)
-    last_pair = time.monotonic()
-    last_invalid = 0.0
-    last_log = 0.0
+    spin_stop = threading.Event()
+    def spin():
+        try:
+            while not spin_stop.is_set():
+                executor.spin_once(timeout_sec=.1)
+        except ExternalShutdownException:
+            pass
+    thread = threading.Thread(target=spin, daemon=True)
+    thread.start()
+    last_pair, last_invalid, last_log = time.monotonic(), 0.0, 0.0
+    next_measurement, next_preview = 0.0, 0.0
     try:
         while rclpy.ok():
-            pair = node.take_pair()
+            if node.take_session_reset():
+                estimator.reset('new recognition session; waiting for a fresh YOLO seed')
             now = time.monotonic()
+            if now < next_measurement:
+                time.sleep(min(.005, next_measurement-now))
+                continue
+            pair = node.take_pair()
             if pair is None:
-                if now - last_pair > args.max_age_ms * 0.001 and now - last_invalid > 0.2:
-                    history.clear()
-                    msg = empty_message(node.get_clock().now().to_msg(), node.status)
-                    node.publisher.publish(msg)
+                if now-last_pair > args.max_age_ms / 1000 and now-last_invalid > .2:
+                    # Numbers become invalid now. Preserve visual state only
+                    # within its separate 500-ms optical-flow gap limit.
+                    if now-last_pair > .5:
+                        estimator.reset('camera RGB-D input gap exceeded 500 ms')
+                    node.publisher.publish(empty_message(node.get_clock().now().to_msg(), node.status))
                     last_invalid = now
-                time.sleep(0.01)
+                time.sleep(.002)
                 continue
             last_pair = now
+            next_measurement = now+1/args.track_max_fps if args.track_max_fps else 0
             try:
-                msg = process_pair(pair, model, args, node, history)
-            except (ValueError, RuntimeError) as exc:
-                status = str(exc)
-                if not status.startswith('confirming front legs'):
-                    history.clear()
-                msg = empty_message(pair[0].header.stamp, status, pair[2])
+                msg = process_pair(pair, args, node, estimator)
+            except (ValueError, RuntimeError, cv2.error) as exc:
+                msg = empty_message(pair[0].header.stamp, str(exc), pair[2])
+            if stamp_ns(msg) < node.recognition_start_ns:
+                msg = empty_message(msg.header.stamp, 'Waiting for new recognition session')
             node.publisher.publish(msg)
-            if not msg.valid:
-                last_invalid = time.monotonic()
-            if time.monotonic() - last_log >= 2:
+            if now >= next_preview:
+                node.preview(pair[0].header, decode_image(pair[0]), estimator, msg)
+                next_preview = now+1/args.preview_fps if args.preview_fps else 0
+            if now-last_log >= 2:
                 if msg.valid:
-                    node.get_logger().info(
-                        f'forward={msg.camera_forward_m:.3f} m, left={msg.opening_lateral_m:.3f} m, '
-                        f'face_yaw={math.degrees(msg.face_yaw_rad):+.2f} deg, '
-                        f'width={msg.opening_width_m:.3f} m, height~={msg.opening_height_estimate_m:.3f} m, '
-                        f'RGB/Depth dt={msg.rgb_depth_delta_ms:+.1f} ms')
+                    node.get_logger().info(f'RGB-D forward={msg.camera_forward_m:.3f} m, '
+                                          f'left={msg.opening_lateral_m:+.3f} m, '
+                                          f'entry={math.degrees(msg.entry_heading_rad):+.2f} deg; {msg.status}')
                 else:
                     node.get_logger().warn(msg.status)
-                last_log = time.monotonic()
+                last_log = now
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        spin_stop.set()
+        executor.wake()
+        thread.join(timeout=2)
         executor.shutdown()
-        receiver.join(timeout=2)
         node.destroy_node()
         if rclpy.ok():
             rclpy.shutdown()

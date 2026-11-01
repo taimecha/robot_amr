@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -eo pipefail
 
+project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 source /opt/ros/jazzy/setup.bash
-astra_overlay=${ASTRA_OVERLAY:-/home/tai/tai_robot_one_community/ros2_ws/install/astra_depth}
+astra_overlay=${ASTRA_OVERLAY:-$project_dir/../../ros2_ws/install}
 source "$astra_overlay/setup.bash"
 set -u
 
-project_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 rgb_calibration_file="$project_dir/config/calibration/astra_pro_rgb_640x480_2026-10-11.yaml"
 if [[ ! -r "$rgb_calibration_file" ]]; then
   echo "Không đọc được file hiệu chuẩn RGB: $rgb_calibration_file" >&2
@@ -31,12 +31,11 @@ if pgrep -f 'astra_camera_node( |$)' >/dev/null; then
   exit 1
 fi
 
-export LD_LIBRARY_PATH="/home/tai/tai_robot_one_community/ros2_ws/install/astra_depth/astra_camera/lib:/home/tai/.local/orbbec_ros2_astra_camera/astra_camera/openni2_redist/x64:/home/tai/.local/ros_jazzy_astra_deps/usr/lib/x86_64-linux-gnu:/home/tai/.local/ros_jazzy_astra_deps/opt/ros/jazzy/lib:${LD_LIBRARY_PATH:-}"
-
 exec ros2 launch astra_camera astra_pro.launch.xml \
   depth_registration:=true \
   enable_color:=true \
+  enable_ir:=false \
   use_uvc_camera:=true \
-  enable_point_cloud:=true \
+  enable_point_cloud:="${ASTRA_POINT_CLOUD:-true}" \
   enable_colored_point_cloud:=false \
   color_info_url:="file://$rgb_calibration_file"

@@ -111,12 +111,39 @@ def _sample_leg(component, depth_mm, intrinsics, rows, pitch_rad, slope, referen
                 z_m=float(np.median(z)), samples=int(len(z)), mad_m=mad)
 
 
+def _sample_front_legs(components, depth_mm, intrinsics, common_top, common_bottom,
+                       pitch_rad, slope, reference_u, min_z_m, max_z_m, min_depth_samples):
+    """Use the original band first; expand both legs together up to 13 rows.
+
+    A seven-column leg in a nine-row band has just 63 candidate pixels. A few
+    mask holes should not reject a leg if the neighbouring interior rows can
+    supply the same required 60 real Depth samples. Never expand past the
+    common leg height or relax the valid-depth/MAD checks.
+    """
+    span = common_bottom - common_top
+    center = (common_top + common_bottom) // 2
+    initial_half = max(4, min(6, int(round(span * 0.16))))
+    for half in range(initial_half, 7):
+        rows = (max(common_top, center - half), min(common_bottom, center + half))
+        try:
+            samples = [_sample_leg(component, depth_mm, intrinsics, rows, pitch_rad,
+                                   slope, reference_u, min_z_m, max_z_m, min_depth_samples)
+                       for component in components]
+            return samples, rows
+        except ValueError as exc:
+            if (half == 6 or str(exc) not in (
+                    'leg interior has too few mask pixels',
+                    'leg interior has insufficient valid depth')):
+                raise
+
+
 def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
                           inverse_depth_x_slope=0.00015807, reference_u=370.0,
                           min_z_m=0.65, max_z_m=3.5,
                           expected_opening_width_m=0.252,
                           opening_width_tolerance_m=0.08,
                           min_depth_samples=60,
+                          heading_floor_reference=False,
                           camera_ahead_of_chassis_m=0.0665):
     """Return experimental front-opening measurements or raise ValueError.
 
@@ -137,18 +164,11 @@ def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
     # The same narrow row band samples the two vertical front legs at nearly
     # the same height. A wide band can bias their comparison when the mask or
     # measured depth is uneven along the legs.
-    span = common_bottom - common_top
     center_row = (common_top + common_bottom) // 2
-    half_band = max(4, min(6, int(round(span * 0.16))))
-    rows = (max(common_top, center_row - half_band),
-            min(common_bottom, center_row + half_band))
     pitch_rad = math.radians(pitch_deg)
-    samples = [
-        _sample_leg(component, depth_mm, intrinsics, rows, pitch_rad,
-                    inverse_depth_x_slope, reference_u, min_z_m, max_z_m,
-                    min_depth_samples)
-        for component in (left, right)
-    ]
+    samples, rows = _sample_front_legs(
+        (left, right), depth_mm, intrinsics, common_top, common_bottom, pitch_rad,
+        inverse_depth_x_slope, reference_u, min_z_m, max_z_m, min_depth_samples)
     left_sample, right_sample = samples
     separation = right_sample["optical_x_m"] - left_sample["optical_x_m"]
     if not 0.15 <= separation <= 0.60:
@@ -157,6 +177,11 @@ def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
                           separation)
     if abs(face_yaw) > math.radians(20):
         raise ValueError("front-face yaw outside measurement range")
+    heading_diagnostics = {}
+    if heading_floor_reference:
+        from pallet_plane_heading import pallet_plane_heading
+        face_yaw,heading_diagnostics = pallet_plane_heading(
+            depth_mm,intrinsics,(left,right),pitch_rad,reference_u)
 
     # Inner edges are obtained from the mask; use median leg depth instead of
     # boundary depth, which is often mixed with the background by registration.
@@ -199,5 +224,6 @@ def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
                 left_depth_samples=left_sample["samples"],
                 right_depth_samples=right_sample["samples"],
                 sample_row_v=center_row,
+                sample_band_rows=rows,
                 left_depth_mad_m=left_sample["mad_m"],
-                right_depth_mad_m=right_sample["mad_m"])
+                right_depth_mad_m=right_sample["mad_m"],**heading_diagnostics)
