@@ -73,7 +73,7 @@ class AlignmentRosTest(unittest.TestCase):
         if self.publish_recognition:
             self.yolo.publish(Bool(data=self.yolo_enabled))
             self.recognition.publish(String(data=json.dumps(dict(enabled=self.yolo_enabled,
-                busy=False, locked=True, measurement_ready=True, phase='TRACKING'))))
+                busy=False, locked=True, measurement_ready=True, phase='READY'))))
         stamp = self.node.get_clock().now().to_msg()
         odom = Odometry()
         odom.header.stamp, odom.header.frame_id, odom.child_frame_id = stamp, 'odom', 'base_footprint'

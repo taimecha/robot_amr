@@ -26,7 +26,7 @@
     </material>
 
     <xacro:macro name="fork_mast_lidar"
-                 params="parent x:=0.0 y:=0.0 z:=0.0 yaw:=0.0">
+                 params="parent x:=0.0 y:=0.0 z:=0.0 yaw:=0.0 housing_yaw_correction:=0.0">
         <joint name="lidar_joint" type="fixed">
             <parent link="${parent}"/>
             <child link="lidar_link"/>
@@ -38,21 +38,21 @@
         <link name="lidar_link">
             <visual name="a1m8_base_visual">
                 <!-- Bottom of the lidar sits on the common sensor plate. -->
-                <origin xyz="0 0 -0.0375" rpy="0 0 0"/>
+                <origin xyz="0 0 -0.0375" rpy="0 0 ${housing_yaw_correction}"/>
                 <geometry>
                     <box size="${lidar_body_width} ${lidar_body_depth} 0.025"/>
                 </geometry>
                 <material name="lidar_black"/>
             </visual>
             <visual name="a1m8_turret_visual">
-                <origin xyz="0 0 -0.0125" rpy="0 0 0"/>
+                <origin xyz="0 0 -0.0125" rpy="0 0 ${housing_yaw_correction}"/>
                 <geometry>
                     <cylinder radius="${lidar_turret_radius}" length="0.035"/>
                 </geometry>
                 <material name="lidar_red"/>
             </visual>
             <visual name="a1m8_top_cap_visual">
-                <origin xyz="0 0 0.0025" rpy="0 0 0"/>
+                <origin xyz="0 0 0.0025" rpy="0 0 ${housing_yaw_correction}"/>
                 <geometry>
                     <cylinder radius="${lidar_turret_radius * 0.72}" length="0.005"/>
                 </geometry>
@@ -61,7 +61,7 @@
             <collision name="a1m8_body_collision">
                 <!-- The scan plane is 5 mm below the top of the housing. -->
                 <origin xyz="0 0 ${-lidar_body_height / 2 + 0.005}"
-                        rpy="0 0 0"/>
+                        rpy="0 0 ${housing_yaw_correction}"/>
                 <geometry>
                     <box size="${lidar_body_width} ${lidar_body_depth} ${lidar_body_height}"/>
                 </geometry>
@@ -71,7 +71,7 @@
                                 y="${lidar_body_depth}"
                                 z="${lidar_body_height}">
                 <origin xyz="0 0 ${-lidar_body_height / 2 + 0.005}"
-                        rpy="0 0 0"/>
+                        rpy="0 0 ${housing_yaw_correction}"/>
             </xacro:inertial_box>
         </link>
 

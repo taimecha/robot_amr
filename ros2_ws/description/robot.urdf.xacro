@@ -8,6 +8,9 @@
                default="gz_ros2_control/GazeboSimSystem"/>
     <xacro:arg name="controllers_file"
                default="$(find tai_robot_one)/config/ros2_controllers.yaml"/>
+    <xacro:arg name="sim_camera_width" default="160"/>
+    <xacro:arg name="sim_camera_height" default="120"/>
+    <xacro:arg name="sim_camera_rate" default="10"/>
 
     <!-- Real-hardware parameters are ignored by gz_ros2_control. Stable udev
          symlinks are mandatory because ttyUSB numbering is not deterministic. -->

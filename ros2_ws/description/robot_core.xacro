@@ -442,10 +442,12 @@
         <xacro:mast_sensor_mount parent="mast_frame" include_lidar="false"
                                  camera_pitch="${20.0 * pi / 180.0}"/>
     </xacro:unless>
-    <!-- Both lidars use the validated temporary chassis mount. -->
+    <!-- Preserve the measured -2 degree optical scan yaw. Align only the
+         square housing visual/collision with the chassis for the demo. -->
     <xacro:fork_mast_lidar parent="base_footprint"
                            x="${lidar_installed_x}" y="${lidar_installed_y}"
-                           z="${lidar_installed_z}" yaw="${lidar_installed_yaw}"/>
+                           z="${lidar_installed_z}" yaw="${lidar_installed_yaw}"
+                           housing_yaw_correction="${-lidar_installed_yaw}"/>
 
     <!-- BNO055 mounted near the centre of the chassis top surface. -->
     <xacro:bno055_imu parent="chassis" x="0.0" y="0.0" yaw="0.0"/>

@@ -172,7 +172,8 @@ class PalletAlignmentNode(Node):
             state = json.loads(msg.data)
             if not all(type(state[k]) is bool for k in ('enabled', 'busy', 'locked', 'measurement_ready')):
                 raise ValueError('Invalid recognition status')
-            if state.get('phase') not in ('ACQUIRING', 'TRACKING', 'PAUSED', 'ACQUIRE_FAILED', 'LOST'):
+            if state.get('phase') not in ('ACQUIRING', 'STOPPING_YOLO', 'VERIFYING_RGBD',
+                                           'READY', 'PAUSED', 'LOST', 'SENSOR_FAULT', 'CANCELED'):
                 raise ValueError('Invalid recognition phase')
             self.recognition = state
             self.recognition_received = time.monotonic()
@@ -196,7 +197,7 @@ class PalletAlignmentNode(Node):
             return False, 'Chưa có trạng thái mới xác nhận YOLO đã tắt'
         if self.yolo_enabled or self.recognition['enabled'] or self.recognition['busy']:
             return False, 'Chờ YOLO tắt và xử lý xong khung hình đang nhận diện'
-        if (not self.recognition['locked'] or self.recognition['phase'] != 'TRACKING'
+        if (not self.recognition['locked'] or self.recognition['phase'] != 'READY'
                 or (require_measurement and not self.recognition['measurement_ready'])):
             return False, 'Chưa nhận diện rõ pallet và có phép đo RGB + Depth ổn định'
         return True, ''

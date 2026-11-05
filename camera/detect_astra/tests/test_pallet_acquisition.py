@@ -9,8 +9,15 @@ from pallet_acquisition import AcquisitionSession
 
 class AcquisitionTest(unittest.TestCase):
     def session(self):
-        session = AcquisitionSession(); session.start(0., 100.)
+        session = AcquisitionSession(); session.accuracy_validated = True; session.start(0., 100.)
         return session
+
+    def test_accuracy_unverified_blocks_ready_even_with_stable_samples(self):
+        s=self.session(); s.accuracy_validated=False
+        for t in (9.,9.4,9.8):self.detection(s,t)
+        self.targets(s,10.1)
+        self.assertFalse(s.tick(10.1,110.1))
+        self.assertEqual(s.phase,'ACQUIRING')
 
     def detection(self, s, t, confidence=.9, valid=True):
         s.detection(100+t,t,100+t,valid,confidence,(10.,10.,110.,90.),'pallets')
@@ -20,14 +27,16 @@ class AcquisitionTest(unittest.TestCase):
             t=end-.5+i*.05
             s.target(100+t,t,100+t,True,2.,.01,math.radians(1))
 
-    def test_three_seconds_minimum_then_pause_and_wait(self):
+    def test_three_seconds_minimum_then_verify_and_wait(self):
         s=self.session()
         for t in (1.5,2.,2.5):self.detection(s,t)
         self.targets(s,2.9)
         self.assertFalse(s.tick(2.9,102.9))
         self.targets(s,3.)
         self.assertTrue(s.tick(3.,103.))
-        self.assertEqual(s.phase,'TRACKING'); self.assertTrue(s.locked)
+        self.assertEqual(s.phase,'STOPPING_YOLO'); self.assertFalse(s.locked)
+        s.yolo_stopped(); self.assertEqual(s.phase,'VERIFYING_RGBD')
+        s.verified(); self.assertEqual(s.phase,'READY'); self.assertTrue(s.locked)
         self.assertFalse(s.tick(3.1,103.1))
 
     def test_success_late_in_window(self):
@@ -35,23 +44,25 @@ class AcquisitionTest(unittest.TestCase):
         for t in (3.5,4.,4.5):self.detection(s,t)
         self.assertFalse(s.tick(4.5,104.5))
         self.targets(s,4.9)
-        self.assertTrue(s.tick(4.9,104.9)); self.assertTrue(s.locked)
+        self.assertTrue(s.tick(4.9,104.9)); self.assertFalse(s.locked)
 
-    def test_timeout_no_pallet_or_no_fresh_depth(self):
+    def test_no_overall_timeout_without_pallet_or_depth(self):
         for detections in (False,True):
             s=self.session()
             if detections:
                 for t in (3.5,4.,4.5):self.detection(s,t)
-            self.assertTrue(s.tick(5.,105.))
-            self.assertEqual(s.phase,'ACQUIRE_FAILED'); self.assertFalse(s.locked)
+            self.assertFalse(s.tick(50.,150.))
+            self.assertEqual(s.phase,'ACQUIRING'); self.assertFalse(s.locked)
             self.targets(s,5.2)
-            self.assertFalse(s.tick(5.2,105.2)); self.assertFalse(s.locked)
+            self.assertEqual(s.tick(5.2,105.2), detections)
+            self.assertFalse(s.locked)
 
-    def test_late_callback_cannot_confirm_after_deadline(self):
+    def test_late_success_after_five_seconds(self):
         s=self.session()
-        for t in (4.,4.4,4.8):self.detection(s,t)
-        self.targets(s,5.1)
-        self.assertTrue(s.tick(5.1,105.1))
+        for t in (9.,9.4,9.8):self.detection(s,t)
+        self.targets(s,10.1)
+        self.assertTrue(s.tick(10.1,110.1))
+        self.assertEqual(s.phase,'STOPPING_YOLO')
         self.assertFalse(s.locked)
 
     def test_low_confidence_and_duplicate_detections_do_not_confirm(self):
@@ -77,7 +88,7 @@ class AcquisitionTest(unittest.TestCase):
     def test_temporary_depth_error_preserves_identity_but_lost_clears_it(self):
         s=self.session()
         for t in (1.5,2.,2.5):self.detection(s,t)
-        self.targets(s,3.); s.tick(3.,103.)
+        self.targets(s,3.); s.tick(3.,103.); s.yolo_stopped(); s.verified()
         s.target(103.1,3.1,103.1,False)
         self.assertTrue(s.locked); self.assertFalse(s.measurement_ready(3.1,103.1))
         self.targets(s,3.8)
@@ -105,6 +116,7 @@ class AcquisitionTest(unittest.TestCase):
         self.assertFalse(s.measurement_ready(3.,103.))
         self.targets(s,3.)
         self.assertTrue(s.tick(3.,103.))
-        self.assertTrue(s.locked)
+        self.assertEqual(s.phase,'STOPPING_YOLO')
+        self.assertFalse(s.locked)
 
 if __name__=='__main__':unittest.main()

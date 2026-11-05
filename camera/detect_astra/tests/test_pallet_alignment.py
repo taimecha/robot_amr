@@ -109,7 +109,7 @@ class AlignmentTest(unittest.TestCase):
                     oldv, oldw = v, w
                     result = c.tick(t, t)
                     v, w = c.v, c.w
-                    self.assertLessEqual(abs(v), .080001)
+                    self.assertLessEqual(abs(v), c.config.max_linear_mps+1e-6)
                     self.assertLessEqual(abs(w), .200001)
                     if v != 0:  # Immediate safety/completion stops intentionally override acceleration.
                         self.assertLessEqual(abs(v-oldv), .004001)

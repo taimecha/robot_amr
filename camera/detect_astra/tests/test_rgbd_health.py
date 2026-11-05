@@ -21,8 +21,8 @@ class HealthTest(unittest.TestCase):
         h.reset()
         self.assertFalse(h.snapshot(6.3, 106.3)['stable'])
 
-    def test_rejects_low_rate_drift_invalid_and_replayed_data(self):
-        self.assertFalse(self.fill(RGBDHealth(), fps=2)['stable'])
+    def test_accepts_low_rate_when_fresh_but_rejects_drift_invalid_and_replay(self):
+        self.assertTrue(self.fill(RGBDHealth(), fps=2)['stable'])
         self.assertFalse(self.fill(RGBDHealth(), drift=.01)['stable'])
         h = RGBDHealth(); self.fill(h)
         h.sample(106.04, 6.04, 106.04, False, 0, 0, 0)
@@ -31,12 +31,23 @@ class HealthTest(unittest.TestCase):
             h.sample(106.04,6.05,106.05,True,2,.01,0.)
         self.assertFalse(h.snapshot(6.05,106.05)['stable'])
 
-    def test_gap_and_future_stamp_fail(self):
+    def test_future_stamp_and_stale_result_fail(self):
         h = RGBDHealth(); self.fill(h)
         h.sample(106.4,6.4,106.4,True,2,.01,math.radians(1))
-        self.assertFalse(h.snapshot(6.4,106.4)['stable'])
+        self.assertTrue(h.snapshot(6.4,106.4)['stable'])
+        self.assertFalse(h.snapshot(6.7,106.7)['stable'])
         h.sample(110.,6.44,106.44,True,2,.01,0.)
         self.assertFalse(h.snapshot(6.44,106.44)['stable'])
+
+    def test_yaw_wrap_is_a_small_spread(self):
+        h=RGBDHealth()
+        for i in range(11):
+            t=i*.5
+            h.sample(100+t,t,100+t,True,2.,.01,
+                     math.radians(179.5 if i%2 else -179.5))
+        result=h.snapshot(5.,105.)
+        self.assertTrue(result['stable'])
+        self.assertAlmostEqual(result['heading_range_deg'],1.,places=3)
 
 
 if __name__ == '__main__':

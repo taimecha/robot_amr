@@ -20,7 +20,7 @@ class AlignmentConfig:
     distance_tolerance_m: float = .02
     lateral_tolerance_m: float = .02
     heading_tolerance_deg: float = 2.0
-    max_linear_mps: float = .08
+    max_linear_mps: float = .10
     max_angular_rps: float = .20
     linear_accel_mps2: float = .08
     angular_accel_rps2: float = .40

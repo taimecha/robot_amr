@@ -26,6 +26,8 @@ class AcquisitionRosTest(unittest.TestCase):
         rclpy.init()
         self.node=Node('acquisition_synthetic_inputs')
         self.detector=DetectionNode(SimpleNamespace(start_paused=False,max_age_ms=250))
+        # Test-only stand-in for an independent absolute calibration check.
+        self.detector.acquisition.accuracy_validated=True
         self.tracker=TargetNode(parse_args('tracker',[]))
         self.alignment=PalletAlignmentNode()
         self.executor=SingleThreadedExecutor()
@@ -61,7 +63,7 @@ class AcquisitionRosTest(unittest.TestCase):
             detection.confidence=.9;detection.class_name='pallets';detection.bbox_xyxy=[270.,170.,390.,300.]
             self.detector.publish_result(detection,generation)
 
-    def spin_until(self,predicate,timeout=8):
+    def spin_until(self,predicate,timeout=15):
         end=time.monotonic()+timeout
         while time.monotonic()<end:
             self.executor.spin_once(timeout_sec=.02)
@@ -78,14 +80,14 @@ class AcquisitionRosTest(unittest.TestCase):
         return future.result()
 
     def acquired(self):
-        self.spin_until(lambda:self.state is not None and self.state['phase']=='TRACKING'
+        self.spin_until(lambda:self.state is not None and self.state['phase']=='READY'
             and not self.state['enabled'] and not self.state['busy'])
         self.spin_until(lambda:self.alignment.recognition_ready()[0])
 
     def test_automatic_handoff_waits_for_manual_start_and_resets_on_retry(self):
         self.acquired()
         self.assertGreaterEqual(self.state['elapsed_s'],3.)
-        self.assertLessEqual(self.state['elapsed_s'],5.)
+        self.assertGreaterEqual(self.state['rgbd_health']['observed_s'],4.85)
         self.assertTrue(self.state['locked']);self.assertFalse(self.alignment.core.active)
         self.assertTrue(self.commands);self.assertTrue(all(v==w==0 for v,w in self.commands))
         generation=self.detector.inference_generation-1
@@ -97,14 +99,23 @@ class AcquisitionRosTest(unittest.TestCase):
         self.assertFalse(self.state['locked']);self.assertFalse(self.alignment.core.active)
         self.assertTrue(self.tracker.recognition_reset_pending)
 
-    def test_timeout_stops_yolo_without_authorizing_alignment(self):
+    def test_waits_past_five_seconds_without_authorizing_alignment(self):
         self.emit_semantic=False
         with self.detector.lock:self.detector.acquisition.started-=5.1
-        self.spin_until(lambda:self.state is not None and self.state['phase']=='ACQUIRE_FAILED')
-        self.assertFalse(self.state['enabled']);self.assertFalse(self.state['locked'])
+        self.spin_until(lambda:self.state is not None and self.state['elapsed_s']>=5.)
+        self.assertEqual(self.state['phase'],'ACQUIRING')
+        self.assertTrue(self.state['enabled']);self.assertFalse(self.state['locked'])
         self.assertFalse(self.result(self.request(self.client,True)).success)
         self.assertFalse(self.alignment.core.active)
         self.assertTrue(all(v==w==0 for v,w in self.commands))
+
+    def test_unverified_accuracy_never_authorizes_motion(self):
+        self.detector.acquisition.accuracy_validated=False
+        with self.detector.lock:self.detector.acquisition.started-=5.1
+        self.spin_until(lambda:self.state is not None and self.state['elapsed_s']>=6.)
+        self.assertEqual(self.state['phase'],'ACQUIRING')
+        self.assertFalse(self.state['locked'])
+        self.assertFalse(self.result(self.request(self.client,True)).success)
 
     def test_start_waits_for_inflight_yolo_and_rejects_reenable_during_alignment(self):
         self.acquired()

@@ -42,16 +42,14 @@ def generate_launch_description():
     phone_teleop_port = LaunchConfiguration('phone_teleop_port')
     headless = LaunchConfiguration('headless')
     gz_args = LaunchConfiguration('gz_args')
-    world_file = os.path.join(
-        package_share, 'worlds', 'warehouse_empty.sdf')
+    world_file = LaunchConfiguration('world')
     model_path = os.path.join(package_share, 'worlds', 'models')
     existing_resource_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
     gazebo_resource_path = os.pathsep.join(
         path for path in (model_path, existing_resource_path) if path)
     xacro_file = os.path.join(
         package_share, 'description', 'robot.urdf.xacro')
-    rviz_config = os.path.join(
-        package_share, 'config', 'gazebo_robot.rviz')
+    rviz_config = LaunchConfiguration('rviz_config')
     controllers_file = os.path.join(
         package_share, 'config', 'ros2_controllers.yaml')
     ekf_file = os.path.join(package_share, 'config', 'ekf.yaml')
@@ -62,6 +60,9 @@ def generate_launch_description():
             'use_sim': 'true',
             'hardware_plugin': 'gz_ros2_control/GazeboSimSystem',
             'controllers_file': controllers_file,
+            'sim_camera_width': os.environ.get('TAI_SIM_CAMERA_WIDTH', '160'),
+            'sim_camera_height': os.environ.get('TAI_SIM_CAMERA_HEIGHT', '120'),
+            'sim_camera_rate': os.environ.get('TAI_SIM_CAMERA_RATE', '10'),
         },
     ).toxml()
     robot_parameters = {
@@ -94,7 +95,10 @@ def generate_launch_description():
             '/camera/image@sensor_msgs/msg/Image[gz.msgs.Image',
             '/camera/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo',
             '/camera/depth_image@sensor_msgs/msg/Image[gz.msgs.Image',
-            '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked',
+            *(['/pallet/pose@geometry_msgs/msg/PoseStamped[gz.msgs.Pose']
+              if os.environ.get('TAI_SIM_BRIDGE_PALLET_POSE') == '1' else []),
+            *([] if os.environ.get('TAI_SIM_DISABLE_POINTS') == '1' else [
+                '/camera/points@sensor_msgs/msg/PointCloud2[gz.msgs.PointCloudPacked']),
         ],
         # Keep the Gazebo render products private.  The filter below publishes
         # the hardware-compatible public depth/cloud topics after applying the
@@ -328,15 +332,10 @@ def generate_launch_description():
         # WSLg exposes Windows GPUs through Mesa's D3D12 Gallium driver.
         # The RGB-D sensor uses Ogre1, which is stable on this path.  LiDAR is
         # now physics-based and no longer shares the rendering backend.
-        SetEnvironmentVariable(
-            name='MESA_D3D12_DEFAULT_ADAPTER_NAME',
-            value='NVIDIA'),
-        SetEnvironmentVariable(
-            name='GALLIUM_DRIVER',
-            value='d3d12'),
-        SetEnvironmentVariable(
-            name='LIBGL_ALWAYS_SOFTWARE',
-            value='0'),
+        *([SetEnvironmentVariable(name='MESA_D3D12_DEFAULT_ADAPTER_NAME', value='NVIDIA'),
+           SetEnvironmentVariable(name='GALLIUM_DRIVER', value='d3d12'),
+           SetEnvironmentVariable(name='LIBGL_ALWAYS_SOFTWARE', value='0')]
+          if 'microsoft' in os.uname().release.lower() else []),
         SetEnvironmentVariable(
             name='GZ_SIM_RESOURCE_PATH',
             value=gazebo_resource_path),
@@ -368,6 +367,14 @@ def generate_launch_description():
             'headless',
             default_value='false',
             description='Run the Gazebo server without its 3D GUI'),
+        DeclareLaunchArgument(
+            'world',
+            default_value=os.path.join(package_share, 'worlds', 'warehouse_empty.sdf'),
+            description='Absolute SDF world path'),
+        DeclareLaunchArgument(
+            'rviz_config',
+            default_value=os.path.join(package_share, 'config', 'gazebo_robot.rviz'),
+            description='RViz display configuration'),
         DeclareLaunchArgument(
             'gz_args',
             default_value=[

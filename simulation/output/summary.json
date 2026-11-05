@@ -1,0 +1,80 @@
+{
+  "mode": "OFFLINE_SIMULATION_ONLY",
+  "robot_command_publishers": 0,
+  "mode_contracts": {
+    "DIAGNOSTIC": "pallet RGB-D remains active during motion; measurements do not steer",
+    "FROZEN_TARGET": "YOLO and pallet tracking stop before motion; odom/IMU follow fixed path"
+  },
+  "example_path": {
+    "length_m": 1.2036819779324728,
+    "max_abs_kappa_1pm": 0.7370031527411341,
+    "example_corridor_clearance_m": 0.2900429309135116,
+    "illustrative_feasible": true,
+    "reason": "illustrative geometry/curvature only; actual collision and insertion not verified"
+  },
+  "acquisition_ready_s": 10.2,
+  "nominal_accuracy_assumed_validated": true,
+  "ready_requires_operator_start": true,
+  "fault_cases": [
+    {
+      "case": "stale_odom",
+      "initial": "FOLLOW_CURVE",
+      "fault": "odom age > 0.20 s",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    },
+    {
+      "case": "stale_depth",
+      "initial": "FOLLOW_CURVE",
+      "fault": "obstacle data stale",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    },
+    {
+      "case": "obstacle",
+      "initial": "FOLLOW_CURVE",
+      "fault": "obstacle in swept corridor",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    },
+    {
+      "case": "odom_reset",
+      "initial": "FOLLOW_CURVE",
+      "fault": "odom epoch changed",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    },
+    {
+      "case": "second_publisher",
+      "initial": "FOLLOW_CURVE",
+      "fault": "command owner conflict",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    },
+    {
+      "case": "cancel",
+      "initial": "FOLLOW_CURVE",
+      "fault": "operator canceled",
+      "result": "STOP_LATCHED",
+      "auto_resume": false,
+      "motor_command": false
+    }
+  ],
+  "grid_cases": 54,
+  "grid_illustrative_feasible": 46,
+  "shadow_final_state": "WAIT_INSERTION_VERIFICATION",
+  "shadow_final_lateral_error_m": 0.0,
+  "shadow_duration_s": 15.3,
+  "limitations": [
+    "fake sensors and odometry",
+    "synthetic corridor",
+    "no Pi runtime configuration",
+    "no measured minimum turn radius or pallet hole dimensions",
+    "no Gazebo contact or independent insertion verification"
+  ]
+}

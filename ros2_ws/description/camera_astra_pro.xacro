@@ -13,9 +13,9 @@
          160 x 120 at 10 Hz preserves the camera FOV and supplies several
          samples per one-degree obstacle-scan bin while cutting cloud work by
          four versus the previous 320 x 240 profile. -->
-    <xacro:property name="astra_image_width" value="160"/>
-    <xacro:property name="astra_image_height" value="120"/>
-    <xacro:property name="astra_update_rate" value="10"/>
+    <xacro:property name="astra_image_width" value="$(arg sim_camera_width)"/>
+    <xacro:property name="astra_image_height" value="$(arg sim_camera_height)"/>
+    <xacro:property name="astra_update_rate" value="$(arg sim_camera_rate)"/>
     <xacro:property name="astra_fx"
                     value="${(astra_image_width / 2.0)
                              / tan(astra_horizontal_fov / 2.0)}"/>

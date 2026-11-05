@@ -5,6 +5,7 @@ import math
 
 class RGBDHealth:
     WINDOW_S = 5.0
+    MIN_SAMPLES = 6
 
     def __init__(self):
         self.reset()
@@ -35,11 +36,17 @@ class RGBDHealth:
         gap = max([b[0]-a[0] for a,b in zip(good,good[1:])]
                   + ([wall-good[-1][0], good[0][0]-rows[0][0]] if good else [self.WINDOW_S]))
         spread = [max(r[i] for r in good)-min(r[i] for r in good)
-                  if good else None for i in (3,4,5)]
+                  if good else None for i in (3,4)]
+        yaw_ref = good[-1][5] if good else 0.
+        yaw_offsets = [math.atan2(math.sin(r[5]-yaw_ref),math.cos(r[5]-yaw_ref))
+                       for r in good]
+        spread.append(max(yaw_offsets)-min(yaw_offsets) if good else None)
         fresh = bool(rows and rows[-1][2] and wall-rows[-1][0] <= .25
                      and -.05 <= ros-rows[-1][1] <= .25)
-        stable = (fresh and span >= self.WINDOW_S-.15 and ratio >= .98 and fps >= 10
-                  and gap <= .25 and spread[0] <= .03 and spread[1] <= .02
+        # Stationary acquisition favors quality over frame rate. Freshness still
+        # uses the independent 250 ms deadline at the time of readiness.
+        stable = (fresh and span >= self.WINDOW_S-.15 and len(good) >= self.MIN_SAMPLES
+                  and ratio >= .98 and spread[0] <= .03 and spread[1] <= .02
                   and spread[2] <= math.radians(2))
         return dict(stable=bool(stable), window_s=self.WINDOW_S,
                     observed_s=span, samples=len(rows), valid_samples=len(good),

@@ -95,14 +95,12 @@ class DetectionNode(Node):
                          last_issue=self.last_issue)
             state['rgbd_health'] = self.rgbd_health.snapshot(
                 time.monotonic(), self.get_clock().now().nanoseconds/1e9)
-            state['rgbd_health']['stable'] &= (self.acquisition.locked
+            state['rgbd_health']['stable'] &= (self.acquisition.phase == 'READY'
                 and not self.inference_enabled and not self.inference_busy)
             state['goal_gate'] = self.goal_gate.snapshot() if self.goal_gate is not None else None
             state['yolo_stopped_ros_s'] = self.measure_after_ros
-            if self.acquisition.locked:
-                state['reason'] = ('Cửa sổ RGB + Depth 5 giây đạt; chưa xác nhận cho xe căn thật' if
-                    state['rgbd_health']['stable'] else
-                    'Đã xác nhận pallet; YOLO tắt. Đang kiểm tra độ ổn định RGB + Depth (5 giây)')
+            if self.acquisition.phase == 'VERIFYING_RGBD':
+                state['reason'] = 'YOLO đã tắt; đang chờ RGB-D mới và ổn định'
             self.phase_publisher.publish(String(data=json.dumps(state, allow_nan=False)))
 
     def pause_locked(self):
@@ -114,12 +112,22 @@ class DetectionNode(Node):
     def on_target(self, msg):
         now, wall = self.get_clock().now().nanoseconds/1e9, time.monotonic()
         with self.lock:
-            self.acquisition.target(stamp_ns(msg)/1e9, wall, now, valid_target(msg, now),
+            valid = valid_target(msg, now)
+            previous_count = len(self.acquisition.targets)
+            self.acquisition.target(stamp_ns(msg)/1e9, wall, now, valid,
                 msg.camera_forward_m, msg.opening_lateral_m, msg.entry_heading_rad,
                 lost=msg.status.startswith('LOST:'))
+            geometry_reset = previous_count >= 3 and len(self.acquisition.targets) <= 1
+            if self.acquisition.phase in ('VERIFYING_RGBD', 'READY') and (not valid or geometry_reset):
+                if self.alignment_active:
+                    self.invalidate_locked('Phép đo pallet mất ổn định trong khi xe đang căn')
+                else:
+                    self.start_locked()
+                return
             if (self.measure_after_ros is not None and stamp_ns(msg)/1e9 > self.measure_after_ros
-                    and not self.inference_enabled and not self.inference_busy and self.acquisition.locked):
-                self.rgbd_health.sample(stamp_ns(msg)/1e9, wall, now, valid_target(msg, now),
+                    and not self.inference_enabled and not self.inference_busy
+                    and self.acquisition.phase in ('VERIFYING_RGBD', 'READY')):
+                self.rgbd_health.sample(stamp_ns(msg)/1e9, wall, now, valid,
                     msg.camera_forward_m, msg.opening_lateral_m, msg.entry_heading_rad)
 
     def invalidate_locked(self, reason):
@@ -182,17 +190,26 @@ class DetectionNode(Node):
         with self.lock:
             if self.acquisition.tick(wall, now):
                 self.pause_locked()
-            if (not self.inference_enabled and not self.inference_busy and self.acquisition.locked
-                    and self.measure_after_ros is None):
+            if (not self.inference_enabled and not self.inference_busy
+                    and self.acquisition.phase == 'STOPPING_YOLO'):
                 self.rgbd_health.reset()
                 self.measure_after_ros = now
+                self.acquisition.yolo_stopped()
+            if self.acquisition.phase == 'VERIFYING_RGBD':
+                if self.rgbd_health.snapshot(wall, now)['stable']:
+                    self.acquisition.verified()
+                elif (self.acquisition.target_received is not None
+                      and wall-self.acquisition.target_received > 1.):
+                    # A lost target before lock starts a fresh stationary session.
+                    self.start_locked()
             remaining = []
             for future, deadline in self.prepare_waiters:
                 if future.done():
                     continue
                 if not self.inference_busy or wall >= deadline:
                     ready = (not self.inference_enabled and not self.inference_busy
-                             and self.acquisition.locked and self.acquisition.measurement_ready(wall, now))
+                             and self.acquisition.phase == 'READY'
+                             and self.rgbd_health.snapshot(wall, now)['stable'])
                     future.set_result((ready, 'YOLO đã tắt; phép đo sẵn sàng' if ready else
                         'Chưa xác nhận pallet/phép đo mới hoặc YOLO chưa dừng xong'))
                 else:
@@ -228,7 +245,8 @@ class DetectionNode(Node):
                     self.acquisition.pause()
         self.publish_enabled()
         response.success = True
-        response.message = 'Nhận diện 3–5 giây rồi tự tắt YOLO' if request.data else 'YOLO paused; RGB-D tracker continues independently'
+        response.message = ('Nhận diện tới khi đủ dữ liệu mới và ổn định; không giới hạn tổng thời gian'
+                            if request.data else 'YOLO paused; RGB-D tracker continues independently')
         return response
 
     def inference_state(self):

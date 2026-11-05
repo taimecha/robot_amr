@@ -19,10 +19,14 @@ def valid_target(msg, now_s):
 
 class AcquisitionSession:
     MIN_SECONDS = 3.0
-    MAX_SECONDS = 5.0
+    # Minimum observation span is a quality gate, never an acquisition deadline.
+    MAX_SECONDS = None
 
     def __init__(self, seed_age_s=1.0):
         self.seed_age_s = seed_age_s
+        # Must be set only by a separately validated calibration/accuracy gate.
+        # The current ROS pipeline has no such proof, so stay acquiring.
+        self.accuracy_validated = False
         self.session = 0
         self.started = None
         self.started_ros = None
@@ -40,7 +44,7 @@ class AcquisitionSession:
         self.session += 1
         self.started, self.started_ros = wall, ros
         self.phase, self.locked = 'ACQUIRING', False
-        self.reason = 'Đang nhận diện pallet (3–5 giây)'
+        self.reason = 'Đang nhận diện pallet; chờ đủ dữ liệu mới và ổn định'
         self.detections.clear(); self.targets.clear()
         self.last_detection = self.last_target = self.target_received = None
         self.target_ok = False
@@ -103,15 +107,24 @@ class AcquisitionSession:
         elapsed = wall-self.started
         semantic = (len(self.detections) >= 3 and wall-self.detections[-1][1] <= 1.0
                     and -.05 <= ros-self.detections[-1][0] <= self.seed_age_s)
-        if self.MIN_SECONDS <= elapsed <= self.MAX_SECONDS and semantic and self.measurement_ready(wall, ros):
-            self.phase, self.locked = 'TRACKING', True
-            self.reason = 'Đã xác nhận pallet; YOLO tự tắt. Đo RGB + Depth, chờ bấm căn chỉnh'
-            return True
-        if elapsed >= self.MAX_SECONDS:
-            self.phase, self.locked = 'ACQUIRE_FAILED', False
-            self.reason = 'Hết 5 giây, chưa xác nhận rõ pallet và phép đo; bấm nhận diện lại'
+        if elapsed >= self.MIN_SECONDS and semantic and self.measurement_ready(wall, ros):
+            if not self.accuracy_validated:
+                self.reason = 'Chưa có xác nhận sai số tuyệt đối từ hiệu chuẩn độc lập'
+                return False
+            self.phase, self.locked = 'STOPPING_YOLO', False
+            self.reason = 'Đang chờ inference kết thúc và heartbeat YOLO tắt'
             return True
         return False
+
+    def yolo_stopped(self):
+        if self.phase == 'STOPPING_YOLO':
+            self.phase = 'VERIFYING_RGBD'
+            self.reason = 'Chờ các phép đo RGB-D mới sau khi YOLO dừng'
+
+    def verified(self):
+        if self.phase == 'VERIFYING_RGBD':
+            self.phase, self.locked = 'READY', True
+            self.reason = 'Đã xác minh; chờ người vận hành bắt đầu'
 
     def pause(self):
         if self.phase == 'ACQUIRING':
@@ -122,6 +135,7 @@ class AcquisitionSession:
         return dict(session=self.session, started_ros_s=self.started_ros,
                     phase=self.phase, locked=self.locked,
                     measurement_ready=self.locked and self.measurement_ready(wall, ros),
-                    reason=self.reason, elapsed_s=min(self.MAX_SECONDS, max(0., wall-self.started)) if self.started is not None else 0.,
+                    reason=self.reason, elapsed_s=max(0., wall-self.started) if self.started is not None else 0.,
                     min_seconds=self.MIN_SECONDS, max_seconds=self.MAX_SECONDS,
-                    detections=len(self.detections), target_samples=len(self.targets))
+                    detections=len(self.detections), target_samples=len(self.targets),
+                    accuracy_validated=self.accuracy_validated)

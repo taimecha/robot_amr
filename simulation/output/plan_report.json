@@ -1,0 +1,41 @@
+{
+  "model": "synthetic 2D pallet and clear aisle",
+  "geometry": {
+    "fork_tip_from_base_m": 0.7555000000000001,
+    "fork_outer_half_width_m": 0.0775,
+    "pallet_runner_inner_half_width_m": 0.095,
+    "nominal_lateral_clearance_m": 0.0175
+  },
+  "assumed_uncertainty_terms_m": {
+    "target_lateral_m": 0.002,
+    "target_yaw_m": 0.002637203210945967,
+    "odom_drift_m": 0.002,
+    "tracking_error_m": 0.003,
+    "margin_m": 0.002
+  },
+  "assumed_uncertainty_total_m": 0.011637203210945968,
+  "cases": 73,
+  "illustrative_feasible": 70,
+  "reposition_required": 3,
+  "blocked_obstacle_case": {
+    "lateral_m": 0.02,
+    "yaw_deg": 2,
+    "approach_m": 1.2,
+    "result": "REPOSITION_REQUIRED",
+    "tangent_scale": 1.0,
+    "length_m": 1.2006,
+    "max_kappa_1pm": 0.2943,
+    "swept_clearance_m": -1.0,
+    "uncertainty_m": 0.0116,
+    "estimated_time_s": 16.01,
+    "reason": "synthetic obstacle intersects body",
+    "obstacle": true
+  },
+  "limits": [
+    "2D only; no vertical clearance or load deformation",
+    "2.5 1/m curvature limit is hypothetical",
+    "uncertainty values are hypothetical, not measured",
+    "unknown cells and real obstacles are not modeled",
+    "no INSERT or LIFT authorization from this report"
+  ]
+}
