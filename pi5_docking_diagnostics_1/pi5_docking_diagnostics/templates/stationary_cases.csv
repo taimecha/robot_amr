@@ -1,0 +1,1 @@
+case_id,pallet_id,profile_id,reference_frame,distance_reference,target_feature,gt_x_m,gt_y_m,gt_face_yaw_deg,gt_entry_heading_deg,gt_x_uncertainty_m,gt_y_uncertainty_m,gt_yaw_uncertainty_deg,measurement_method,lighting,repeat_id,notes
