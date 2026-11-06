@@ -51,17 +51,16 @@ class OnePalletCase:
         c,s=math.cos(self.yaw_rad),math.sin(self.yaw_rad)
         return c*dx+s*dy,-s*dx+c*dy
 
-    def path_in_odom(self, target_x, target_y):
+    def path_in_odom(self, target_x, target_y, heading_odom=None):
         """Curve from initial robot pose to a straight pre-dock line in odom."""
-        # Pallet's world +X axis is -spawn_yaw in the initial odom frame.
-        phi=-self.yaw_rad
+        phi=-self.yaw_rad if heading_odom is None else heading_odom
         c,s=math.cos(phi),math.sin(phi)
         target_forward=c*target_x+s*target_y
         target_left=-s*target_x+c*target_y
         approach=target_forward-PALLET_LENGTH/2-FORK_TIP_FROM_BASE-PRE_DOCK_GAP
         if approach <= .5:
             raise ValueError('Pallet quá gần để lập đường cong pre-dock')
-        proposal=candidate(-target_left,self.yaw_deg,approach)
+        proposal=candidate(-target_left,-math.degrees(phi),approach)
         if not proposal['illustrative_feasible']:
             raise ValueError(f'Không có đường cong phù hợp: curvature={proposal["max_abs_kappa_1pm"]:.2f} 1/m')
         rows=[]
@@ -70,9 +69,9 @@ class OnePalletCase:
             rows.append((c*x-s*y,s*x+c*y,yaw+phi,kappa))
         return rows
 
-    def insertion_end_in_odom(self, target_x, target_y):
+    def insertion_end_in_odom(self, target_x, target_y, heading_odom=None):
         """Base pose with fork roots 12 mm before the near face of the pallet."""
-        phi=-self.yaw_rad
+        phi=-self.yaw_rad if heading_odom is None else heading_odom
         reach=-PALLET_LENGTH/2-FORK_ROOT_CLEARANCE-FORK_ROOT_FROM_BASE
         return (target_x+reach*math.cos(phi),
                 target_y+reach*math.sin(phi),phi)

@@ -26,6 +26,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from one_pallet_case import OnePalletCase
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'camera/detect_astra/scripts'))
 from pallet_detection_selection import unique_pallet_indices
+from pallet_rgbd_filter import StablePoseWindow,front_edge_yaw
 
 # Gazebo robot_core.xacro / camera_astra_pro.xacro extrinsic, for this demo only.
 CAMERA_X, CAMERA_Z, CAMERA_PITCH = .367, .800, math.radians(20)
@@ -46,8 +47,8 @@ def decode_depth(msg):
     if msg.encoding!='32FC1':raise ValueError(f'Depth {msg.encoding}')
     return np.frombuffer(msg.data,np.float32).reshape(msg.height,msg.step//4)[:,:msg.width]
 
-def measure_top_center(mask, depth, info, odom):
-    """Approximate top-surface center from registered Depth inside the YOLO mask."""
+def measure_top_pose(mask, depth, info, odom):
+    """Approximate top centre and front-edge yaw from current registered Depth."""
     if mask.shape!=depth.shape:mask=cv2.resize(mask.astype(np.float32),(depth.shape[1],depth.shape[0]),interpolation=cv2.INTER_NEAREST)
     valid=(mask>.5)&np.isfinite(depth)&(depth>.6)&(depth<8.)
     v,u=np.nonzero(valid)
@@ -63,6 +64,9 @@ def measure_top_center(mask, depth, info, odom):
     bz=CAMERA_Z-math.sin(CAMERA_PITCH)*xx+math.cos(CAMERA_PITCH)*zz
     top=(bz>=.08)&(bz<=.14)
     if np.count_nonzero(top)<50:raise ValueError('no top-surface depth pixels')
+    deck=(bz>=.098)&(bz<=.12)
+    if np.count_nonzero(deck)<180:raise ValueError('insufficient top-deck pixels for heading')
+    face_yaw=front_edge_yaw(bx[deck],by[deck])
     # The mask contains a perspective-biased number of near and far pixels.
     # Use the two top-surface extents to approximate the known rectangular top center.
     xlo,xhi=np.quantile(bx[top],[.05,.95])
@@ -71,7 +75,7 @@ def measure_top_center(mask, depth, info, odom):
     p=odom.pose.pose.position; yaw=yaw_of(odom.pose.pose.orientation)
     wx=p.x+math.cos(yaw)*x-math.sin(yaw)*y
     wy=p.y+math.sin(yaw)*x+math.cos(yaw)*y
-    return wx,wy,int(np.count_nonzero(top))
+    return wx,wy,yaw-face_yaw,int(np.count_nonzero(top))
 
 class Visualizer(Node):
     def __init__(self):
@@ -102,9 +106,10 @@ class Visualizer(Node):
         self.last_processed_stamp=None;self.last_rgb_stamp=None
         self.frame_intervals=deque(maxlen=20);self.yolo_times=deque(maxlen=10)
         self.measurements=deque(maxlen=8)
+        self.acquire_window=StablePoseWindow()
         self.verify_measurements=deque(maxlen=4)
         self.verify_mask=None;self.verify_candidate=None;self.verify_start_stamp=None
-        self.state='ACQUIRING';self.locked_xy=None;self.rows=None
+        self.state='ACQUIRING';self.locked_xy=None;self.locked_heading=None;self.rows=None
         self.last_detection='waiting for RGB-D, odom and YOLO'
         self.inference_ms=0.;self.depth_delta_ms=None;self.last_confidence=0.
         torch.set_num_threads(2)
@@ -129,12 +134,12 @@ class Visualizer(Node):
         dx=self.locked_xy[0]-p.x;dy=self.locked_xy[1]-p.y
         return (math.cos(yaw)*dx+math.sin(yaw)*dy,
                 -math.sin(yaw)*dx+math.cos(yaw)*dy,
-                -self.case.yaw_rad-yaw)
+                self.locked_heading-yaw)
 
     def publish_plan(self):
         tx,ty=self.locked_xy
         try:
-            self.rows=self.case.path_in_odom(tx,ty)
+            self.rows=self.case.path_in_odom(tx,ty,self.locked_heading)
         except ValueError as exc:
             self.last_detection=f'REPOSITION_REQUIRED: {exc}'
             self.get_logger().warning(self.last_detection)
@@ -146,7 +151,7 @@ class Visualizer(Node):
             p.pose.orientation.z=math.sin(yaw/2);p.pose.orientation.w=math.cos(yaw/2)
             path.poses.append(p)
         self.path_pub.publish(path)
-        ix,iy,iyaw=self.case.insertion_end_in_odom(*self.case.target_in_odom())
+        ix,iy,iyaw=self.case.insertion_end_in_odom(*self.case.target_in_odom(),self.locked_heading)
         start_x,start_y=self.rows[-1][0],self.rows[-1][1]
         forward=(ix-start_x)*math.cos(iyaw)+(iy-start_y)*math.sin(iyaw)
         ix=start_x+forward*math.cos(iyaw)
@@ -165,24 +170,30 @@ class Visualizer(Node):
         marker.color.r=.05;marker.color.g=.95;marker.color.b=.2;marker.color.a=1.
         self.marker_pub.publish(marker)
         target=PoseStamped();target.header=path.header;target.pose.position.x=tx;target.pose.position.y=ty
-        target.pose.orientation.w=1.;self.target_pub.publish(target)
+        target.pose.orientation.z=math.sin(self.locked_heading/2)
+        target.pose.orientation.w=math.cos(self.locked_heading/2);self.target_pub.publish(target)
         self.lock_pub.publish(Bool(data=True))
         return True
 
     def freeze_if_stable(self, mask, stamp):
-        m=list(self.measurements)
-        if len(m)<3 or m[-1][0]-m[0][0]<.8:return
-        xs=[row[1] for row in m];ys=[row[2] for row in m]
-        if max(xs)-min(xs)>.04 or max(ys)-min(ys)>.04:return
-        tx=float(np.median(xs));ty=float(np.median(ys))
+        if not self.measurements:return
+        _,x,y,heading=self.measurements[-1]
+        stable=self.acquire_window.add(stamp,x,y,heading)
+        if stable is None:
+            self.last_detection+=f'; stable RGB-D {len(self.acquire_window.rows)}/{self.acquire_window.minimum}'
+            return
+        tx,ty,filtered_heading=stable
         # The SDF truth is a simulation-only independent check, never used as measurement.
         expected_x,expected_y=self.case.target_in_odom()
-        if math.hypot(tx-expected_x,ty-expected_y)>.05:
-            self.last_detection=f'RGB-D estimate fails Gazebo truth check: ({tx:.2f},{ty:.2f}) m'
+        if (math.hypot(tx-expected_x,ty-expected_y)>.05 or
+                abs(math.atan2(math.sin(filtered_heading+self.case.yaw_rad),
+                               math.cos(filtered_heading+self.case.yaw_rad)))>math.radians(3)):
+            self.last_detection=f'RGB-D pose fails Gazebo truth check: ({tx:.2f},{ty:.2f},{math.degrees(filtered_heading):+.1f}deg)'
             return
         self.yolo_enabled=False
         self.state='VERIFYING_RGBD'
         self.verify_mask=mask.copy();self.verify_candidate=(tx,ty)
+        self.verify_heading=filtered_heading
         self.verify_start_stamp=stamp;self.verify_measurements.clear()
         self.last_detection=f'YOLO OFF; verifying new RGB-D after {stamp:.2f}s'
         self.get_logger().info('YOLO inference OFF; awaiting fresh post-stop RGB-D measurements')
@@ -193,28 +204,32 @@ class Visualizer(Node):
             self.state='ACQUIRING';self.yolo_enabled=True;self.measurements.clear()
             self.last_detection='robot moved during verification; reacquiring';return
         try:
-            tx,ty,n=measure_top_center(self.verify_mask,decode_depth(depth_msg),self.info,self.odom)
+            tx,ty,heading,n=measure_top_pose(self.verify_mask,decode_depth(depth_msg),self.info,self.odom)
         except Exception as exc:
             self.last_detection=f'RGB-D verification waiting: {str(exc)[:70]}'
             return
         cx,cy=self.verify_candidate
-        if math.hypot(tx-cx,ty-cy)>.03:
-            self.state='ACQUIRING';self.yolo_enabled=True;self.measurements.clear()
-            self.last_detection='post-stop RGB-D moved >30 mm; reacquiring';return
-        self.verify_measurements.append((stamp,tx,ty))
-        self.last_detection=f'YOLO OFF; fresh RGB-D {len(self.verify_measurements)}/2 ({tx:.3f},{ty:.3f}) m n={n}'
+        if (math.hypot(tx-cx,ty-cy)>.03 or
+                abs(math.atan2(math.sin(heading-self.verify_heading),
+                               math.cos(heading-self.verify_heading)))>math.radians(2)):
+            self.state='ACQUIRING';self.yolo_enabled=True;self.measurements.clear();self.acquire_window.clear()
+            self.last_detection='post-stop RGB-D pose changed; reacquiring';return
+        self.verify_measurements.append((stamp,tx,ty,heading))
+        self.last_detection=f'YOLO OFF; fresh RGB-D {len(self.verify_measurements)}/2 ({tx:.3f},{ty:.3f},{math.degrees(heading):+.1f}deg) n={n}'
         if len(self.verify_measurements)>=2 and self.verify_measurements[-1][0]>self.verify_measurements[0][0]:
             all_x=[r[1] for r in self.verify_measurements]
             all_y=[r[2] for r in self.verify_measurements]
             fx=float(np.median(all_x));fy=float(np.median(all_y))
+            fh=float(np.median([r[3] for r in self.verify_measurements]))
             self.locked_xy=(fx,fy)
+            self.locked_heading=fh
             if not self.publish_plan():
                 self.state='REPOSITION_REQUIRED';self.model=None
                 return
             self.state='FROZEN_TARGET';self.model=None
             if torch.cuda.is_available():torch.cuda.empty_cache()
-            self.last_detection=f'locked YOLO {self.last_confidence:.2f}; verified RGB-D=({fx:.3f},{fy:.3f}) m'
-            self.get_logger().info(f'FROZEN_TARGET; YOLO OFF; target odom=({fx:.3f},{fy:.3f}) m')
+            self.last_detection=f'locked YOLO {self.last_confidence:.2f}; filtered RGB-D=({fx:.3f},{fy:.3f},{math.degrees(fh):+.1f}deg)'
+            self.get_logger().info(f'FROZEN_TARGET; YOLO OFF; target odom=({fx:.3f},{fy:.3f},{math.degrees(fh):+.1f}deg)')
 
     def publish_status(self):
         dt_ms=1000*sum(self.frame_intervals)/len(self.frame_intervals) if self.frame_intervals else 0.
@@ -256,7 +271,7 @@ class Visualizer(Node):
             if self.odom is None or depth_msg is None or self.info is None:
                 self.last_detection='waiting for RGB-D/CameraInfo/odom'
             elif abs(self.odom.twist.twist.linear.x)>.005 or abs(self.odom.twist.twist.angular.z)>.01:
-                self.measurements.clear();self.last_detection='robot moving; acquisition reset'
+                self.measurements.clear();self.acquire_window.clear();self.last_detection='robot moving; acquisition reset'
             else:
                 t0=time.monotonic()
                 try:
@@ -269,20 +284,20 @@ class Visualizer(Node):
                     indices=unique_pallet_indices(boxes,classes,conf,result.names)
                     self.last_confidence=max((float(conf[i]) for i in indices),default=0.)
                     if len(indices)!=1 or result.masks is None:
-                        self.measurements.clear();self.last_detection=f'YOLO found {len(indices)} pallets'
+                        self.measurements.clear();self.acquire_window.clear();self.last_detection=f'YOLO found {len(indices)} pallets'
                     else:
                         i=indices[0];mask=result.masks.data[i].cpu().numpy()
                         depth=decode_depth(depth_msg)
                         self.depth_delta_ms=round(1000*(stamp-stamp_s(depth_msg)),1)
-                        tx,ty,n=measure_top_center(mask,depth,self.info,self.odom)
-                        self.measurements.append((stamp,tx,ty))
-                        self.last_detection=f'YOLO {result.names[int(classes[i])]} {conf[i]:.2f}; RGB-D=({tx:.3f},{ty:.3f}) m n={n}'
+                        tx,ty,heading,n=measure_top_pose(mask,depth,self.info,self.odom)
+                        self.measurements.append((stamp,tx,ty,heading))
+                        self.last_detection=f'YOLO {result.names[int(classes[i])]} {conf[i]:.2f}; RGB-D=({tx:.3f},{ty:.3f},{math.degrees(heading):+.1f}deg) n={n}'
                         if mask.shape!=frame.shape[:2]:mask=cv2.resize(mask,(msg.width,msg.height),interpolation=cv2.INTER_NEAREST)
                         region=mask>.5;frame[region]=(frame[region]*.55+np.array([0,255,0])*.45).astype(np.uint8)
                         x1,y1,x2,y2=map(int,boxes[i]);cv2.rectangle(frame,(x1,y1),(x2,y2),(0,255,0),2)
                         self.freeze_if_stable(mask,stamp)
                 except Exception as exc:
-                    self.measurements.clear();self.last_detection=f'acquisition rejected: {str(exc)[:100]}'
+                    self.measurements.clear();self.acquire_window.clear();self.last_detection=f'acquisition rejected: {str(exc)[:100]}'
         elif self.state=='VERIFYING_RGBD':
             self.verify_fresh_depth(stamp,depth_msg)
         self.draw_overlay(frame)

@@ -1,5 +1,7 @@
 """Independent live RGB-D pallet measurement after a semantic YOLO seed."""
 from collections import deque
+import math
+import statistics
 
 from pallet_rgb_tracker import PalletRGBTracker
 from pallet_target_geometry import measure_pallet_target
@@ -11,7 +13,10 @@ class RGBDTargetEstimator:
     def __init__(self, args):
         self.args = args
         self.tracker = PalletRGBTracker()
-        self.history = deque(maxlen=args.confirm_frames)
+        self.heading_filter_frames = max(args.confirm_frames,
+                                         getattr(args,'heading_filter_frames',args.confirm_frames))
+        self.history = deque(maxlen=self.heading_filter_frames)
+        self.last_accepted_stamp_ns = None
         self.seed_stamp_ns = 0
         self.seed_class = ''
         self.seed_confidence = 0.0
@@ -33,6 +38,7 @@ class RGBDTargetEstimator:
     def reset(self, reason='tracking reset'):
         self.tracker.reset()
         self.history.clear()
+        self.last_accepted_stamp_ns = None
         self.depth_failures = 0
         self.loss_reason = reason
 
@@ -117,10 +123,29 @@ class RGBDTargetEstimator:
                 # after Depth returns, without requiring another YOLO seed.
                 raise
         self.depth_failures = 0
+        if (self.last_accepted_stamp_ns is not None and
+                stamp_ns-self.last_accepted_stamp_ns > 500_000_000):
+            self.history.clear()
         if self.history and not confirmed(measurement, self.history[-1]):
+            previous=self.history[-1]
+            position_ok=(abs(measurement['camera_forward_m']-previous['camera_forward_m'])<.06
+                         and abs(measurement['opening_lateral_m']-previous['opening_lateral_m'])<.035)
+            if position_ok:
+                # One noisy depth difference between the two legs must not
+                # discard a healthy RGB track or contaminate the median.
+                raise ValueError('heading outlier; waiting for fresh RGB-D angle')
             self.reset('RGB-D geometry jumped')
             raise ValueError('LOST: RGB-D geometry jumped; enable YOLO to reacquire')
         self.history.append(measurement)
-        if len(self.history) < self.args.confirm_frames:
-            raise ValueError(f'confirming front legs {len(self.history)}/{self.args.confirm_frames}')
-        return measurement
+        self.last_accepted_stamp_ns=stamp_ns
+        if len(self.history) < self.heading_filter_frames:
+            raise ValueError(f'confirming front legs {len(self.history)}/{self.heading_filter_frames}; heading median pending')
+        filtered=dict(measurement)
+        angles=[m['face_yaw_rad'] for m in self.history]
+        median=float(statistics.median(angles))
+        inliers=[angle for angle in angles if abs(angle-median)<=math.radians(2.5)]
+        if len(inliers)<self.heading_filter_frames-1:
+            raise ValueError('heading spread too large; waiting for stable RGB-D')
+        filtered['face_yaw_rad']=float(statistics.median(inliers))
+        filtered['entry_heading_rad']=-filtered['face_yaw_rad']
+        return filtered

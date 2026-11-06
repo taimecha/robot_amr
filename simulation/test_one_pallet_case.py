@@ -30,6 +30,14 @@ class OnePalletCaseTest(unittest.TestCase):
             OnePalletCase(1.8,-.15,-10).path_in_odom(
                 *OnePalletCase(1.8,-.15,-10).target_in_odom())
 
+    def test_measured_heading_drives_pre_dock_path(self):
+        case=OnePalletCase(1.7,-.08,8.)
+        measured=math.radians(-7.5)
+        target=case.target_in_odom()
+        rows=case.path_in_odom(*target,measured)
+        self.assertAlmostEqual(rows[-1][2],measured)
+        self.assertAlmostEqual(case.insertion_end_in_odom(*target,measured)[2],measured)
+
 
 if __name__=='__main__':
     unittest.main()

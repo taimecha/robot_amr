@@ -99,6 +99,28 @@ class RGBDTrackingTest(unittest.TestCase):
                                       1_000_000_000+38*33_000_000)
         self.assertAlmostEqual(recovered['camera_forward_m'], first['camera_forward_m'])
 
+    def test_heading_median_rejects_depth_outlier_without_losing_rgb_track(self):
+        self.args.heading_filter_frames=5
+        estimator=RGBDTargetEstimator(self.args)
+        headings=iter((0.,1.,8.,.5,.8,1.1))
+        estimator.measure=lambda *_args: dict(camera_forward_m=1.5,
+            opening_lateral_m=.01,face_yaw_rad=math.radians(next(headings)),
+            entry_heading_rad=0.)
+        for i in range(6):
+            stamp=1_000_000_000+i*33_000_000
+            if i==2:
+                with self.assertRaisesRegex(ValueError,'heading outlier'):
+                    estimator.process(self.image,self.depth,self.intrinsics,stamp)
+                self.assertTrue(estimator.tracker.active)
+            elif i<5:
+                with self.assertRaisesRegex(ValueError,'confirming front legs'):
+                    estimator.process(self.image,self.depth,self.intrinsics,stamp,
+                                      self.seed() if i==0 else None)
+            else:
+                filtered=estimator.process(self.image,self.depth,self.intrinsics,stamp)
+        self.assertAlmostEqual(math.degrees(filtered['face_yaw_rad']),.8,delta=.3)
+        self.assertAlmostEqual(filtered['entry_heading_rad'],-filtered['face_yaw_rad'])
+
     def test_fresh_yolo_masks_do_not_replace_a_healthy_rgb_reference(self):
         estimator = RGBDTargetEstimator(self.args)
         for i in range(3):

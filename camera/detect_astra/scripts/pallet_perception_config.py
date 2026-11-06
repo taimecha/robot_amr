@@ -35,6 +35,8 @@ def parse_args(role, argv=None):
     parser.add_argument('--expected-opening-width-m', type=float, default=.252)
     parser.add_argument('--opening-width-tolerance-m', type=float, default=.08)
     parser.add_argument('--confirm-frames', type=int, default=3)
+    parser.add_argument('--heading-filter-frames', type=int, default=5,
+                        help='Fresh RGB-D headings required for a median-filtered target')
     parser.add_argument('--max-delta-ms', type=float, default=50.0)
     parser.add_argument('--max-age-ms', type=float, default=250.0)
     parser.add_argument('--max-result-age-ms', type=float, default=500.0)
@@ -44,6 +46,7 @@ def parse_args(role, argv=None):
     if args.recognize_after_goal:
         args.start_paused = True
     if (args.cpu_threads < 1 or args.confirm_frames < 1
+            or not 3 <= args.heading_filter_frames <= 15
             or not 0 <= args.conf <= 1 or not 0 <= args.nms_iou <= 1):
         parser.error('Invalid CPU thread count, confirmation count or YOLO confidence/IoU')
     for name in ('max_fps', 'track_max_fps', 'preview_fps'):
