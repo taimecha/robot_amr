@@ -1,0 +1,77 @@
+{
+  "provenance": "SYNTHETIC_FIXTURE_NOT_REAL_CALIBRATION",
+  "revision": "2026-11-08-r3-approved-lattice",
+  "confirmed_real_geometry": false,
+  "missing_real": [
+    "T_base_camera_optical and housing reference",
+    "fork lateral in base (only F-H=-20mm confirmed)",
+    "fork yaw mount",
+    "minimum running speed if required by drive",
+    "individual tine widths/centers confirmation",
+    "four pillar centers confirmation (repo corner positions used only in fixture)"
+  ],
+  "source_notes": {
+    "base_fork_x": "repo pallet_alignment.yaml: fork_root_m=0.3655",
+    "tines": "User confirms pair outer width155mm and thickness3mm; tine widths/centers still repo estimates53mm/+-51mm",
+    "housing_y": "SYNTHETIC housing y=0; F y=-0.020 follows confirmed F-H; not a real base extrinsic",
+    "pallet": "User correction in this session: clear height=100mm, deck about30mm, total about130mm",
+    "fork_z": "User confirms: top75mm at switch trigger; after1mm settle final HOME top74mm; 3mm thickness -> underside71mm",
+    "dynamics": "pallet_alignment.yaml omega=0.20, accel=0.08, angular_accel=0.40; demo dt=0.05; no speed floor"
+  },
+  "base_fork": [
+    0.3655,
+    -0.02,
+    0.0
+  ],
+  "housing_y": 0.0,
+  "fork_length": 0.385,
+  "fork_pair_width": 0.155,
+  "tine_centers_y": [
+    -0.051,
+    0.051
+  ],
+  "tine_width": 0.053,
+  "tine_thickness": 0.003,
+  "fork_bottom_z": 0.071,
+  "body_bounds": [
+    -0.303,
+    0.3305,
+    -0.232,
+    0.232
+  ],
+  "pallet_length": 0.355,
+  "pallet_width": 0.355,
+  "pallet_height": 0.13,
+  "leg_size": 0.05,
+  "leg_height": 0.1,
+  "deck_thickness": 0.03,
+  "rear_clearance": 0.3,
+  "stop_gap": 0.02,
+  "stop_gap_tolerance": 0.005,
+  "max_speed": 0.15,
+  "acceleration": 0.08,
+  "max_omega": 0.2,
+  "angular_acceleration": 0.4,
+  "max_lateral": 0.02,
+  "max_yaw_deg": 0.5,
+  "lift_target": 0.08,
+  "home_settle": 0.001,
+  "pillar_centers_xy": [
+    [
+      0.025,
+      -0.1525
+    ],
+    [
+      0.025,
+      0.1525
+    ],
+    [
+      0.33,
+      -0.1525
+    ],
+    [
+      0.33,
+      0.1525
+    ]
+  ]
+}

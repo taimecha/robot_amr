@@ -44,6 +44,11 @@ constexpr uint32_t LIMIT_DEBOUNCE_MS = 25;
 constexpr uint32_t LIFT_COMMAND_TIMEOUT_MS = 350;
 constexpr uint32_t LIFT_HOME_TIMEOUT_MS = 60000;
 constexpr uint32_t LIFT_HOME_UPPER_RELEASE_TIMEOUT_MS = 750;
+constexpr long LIFT_HOME_SETTLE_STEPS = LIFT_STEPS_PER_M / 1000L;  // 1 mm
+constexpr uint32_t LIFT_HOME_SETTLE_TIMEOUT_MS = 1000;
+constexpr uint32_t LIFT_HOME_LOWER_RELEASE_TIMEOUT_MS = 5000;
+constexpr long LIFT_HOME_LOWER_RELEASE_MAX_STEPS = LIFT_STEPS_PER_M / 40L; // 25 mm
+static_assert(LIFT_STEPS_PER_M % 1000L == 0, "1mm must map to whole steps");
 constexpr uint32_t LIFT_TELEMETRY_INTERVAL_MS = 100;
 
 AccelStepper liftStepper(AccelStepper::DRIVER, LIFT_STEP_PIN, LIFT_DIR_PIN);
@@ -59,6 +64,10 @@ DebouncedLimit lowerLimit{LOWER_LIMIT_PIN, false, false, 0};
 DebouncedLimit upperLimit{UPPER_LIMIT_PIN, false, false, 0};
 
 enum class LiftMode : uint8_t { UNHOMED, IDLE, MOVING, HOMING, FAULT };
+enum class LiftHomeStage : uint8_t { NONE, RELEASE_LOWER, SEEK_LOWER, HOME_SETTLE };
+LiftHomeStage liftHomeStage = LiftHomeStage::NONE;
+long liftHomeStageStartSteps = 0;
+uint32_t liftHomeStageStartedMs = 0;
 
 LiftMode liftMode = LiftMode::UNHOMED;
 bool liftHomed = false;
@@ -143,6 +152,7 @@ void stopLift(LiftMode nextMode) {
   liftStepper.setSpeed(0.0f);
   liftMode = nextMode;
   liftHomeLeavingUpper = false;
+  liftHomeStage = LiftHomeStage::NONE;
 }
 
 void setLiftFault(const char *fault) {
@@ -158,6 +168,7 @@ void acceptLowerHome() {
   liftStepper.moveTo(0);
   liftHomed = true;
   liftHomeLeavingUpper = false;
+  liftHomeStage = LiftHomeStage::NONE;
   liftMode = LiftMode::IDLE;
   snprintf(liftFault, sizeof(liftFault), "NONE");
   Serial.println("EVENT,LIFT_HOME_COMPLETE");
@@ -173,15 +184,16 @@ void startLiftHome(uint32_t nowMs) {
     liftMode = LiftMode::UNHOMED;
   }
   liftLastCommandMs = nowMs;
-  if (lowerLimit.active) {
-    acceptLowerHome();
-    return;
-  }
+  // An already-active lower input must release and retrigger; never accept
+  // a stuck input as HOME. The bounded settle starts only on a new edge.
   liftHomed = false;
   liftHomeLeavingUpper = upperLimit.active;
   liftHomeStartedMs = nowMs;
   liftMode = LiftMode::HOMING;
-  liftStepper.setSpeed(-metresToSteps(LIFT_HOME_SPEED_M_S));
+  liftHomeStage = lowerLimit.active ? LiftHomeStage::RELEASE_LOWER : LiftHomeStage::SEEK_LOWER;
+  liftHomeStageStartSteps = liftStepper.currentPosition();
+  liftHomeStageStartedMs = nowMs;
+  liftStepper.setSpeed((lowerLimit.active ? 1 : -1)*metresToSteps(LIFT_HOME_SPEED_M_S));
   Serial.println(liftHomeLeavingUpper
     ? "EVENT,LIFT_HOME_STARTED_FROM_UPPER"
     : "EVENT,LIFT_HOME_STARTED");
@@ -280,6 +292,56 @@ void updateLift(uint32_t nowMs) {
     return;
   }
 
+  // Watchdog applies to release, seek AND settle, before any step is emitted.
+  if ((liftMode == LiftMode::MOVING || liftMode == LiftMode::HOMING) &&
+      nowMs - liftLastCommandMs > LIFT_COMMAND_TIMEOUT_MS) {
+    const bool wasHoming = liftMode == LiftMode::HOMING;
+    if (wasHoming) liftHomed = false;
+    stopLift(liftHomed ? LiftMode::IDLE : LiftMode::UNHOMED);
+    Serial.println("EVENT,LIFT_STOPPED,COMM_TIMEOUT");
+    return;
+  }
+
+  if (liftMode == LiftMode::HOMING) {
+    if (nowMs - liftHomeStartedMs > LIFT_HOME_TIMEOUT_MS) {
+      setLiftFault("HOME_TIMEOUT");
+      return;
+    }
+    if (liftHomeStage == LiftHomeStage::RELEASE_LOWER) {
+      if (upperLimit.active ||
+          nowMs-liftHomeStageStartedMs > LIFT_HOME_LOWER_RELEASE_TIMEOUT_MS ||
+          labs(liftStepper.currentPosition()-liftHomeStageStartSteps) >= LIFT_HOME_LOWER_RELEASE_MAX_STEPS) {
+        setLiftFault("HOME_LOWER_STUCK");
+        return;
+      }
+      if (!lowerLimit.active) {
+        liftStepper.setSpeed(0.);
+        liftHomeStage = LiftHomeStage::SEEK_LOWER;
+        liftHomeStageStartedMs = nowMs;
+      } else {
+        liftStepper.setSpeed(metresToSteps(LIFT_HOME_SPEED_M_S));
+        liftStepper.runSpeed();
+        return;
+      }
+    }
+    if (liftHomeStage == LiftHomeStage::HOME_SETTLE) {
+      const long travelled = liftHomeStageStartSteps-liftStepper.currentPosition();
+      if (!lowerLimit.active || upperLimit.active || travelled < 0 ||
+          travelled > LIFT_HOME_SETTLE_STEPS ||
+          nowMs-liftHomeStageStartedMs > LIFT_HOME_SETTLE_TIMEOUT_MS) {
+        setLiftFault("HOME_SETTLE_FAILED");
+        return;
+      }
+      if (travelled == LIFT_HOME_SETTLE_STEPS) {
+        acceptLowerHome();
+        return;
+      }
+      liftStepper.setSpeed(-metresToSteps(LIFT_HOME_SPEED_M_S));
+      liftStepper.runSpeed();
+      return;
+    }
+  }
+
   // Nếu reset ngay tại đỉnh, cho phép đi xuống một đoạn ngắn để nhả công tắc.
   // Công tắc không nhả đúng hạn có thể là DIR ngược hoặc công tắc bị kẹt.
   if (liftMode == LiftMode::HOMING && upperLimit.active) {
@@ -296,17 +358,20 @@ void updateLift(uint32_t nowMs) {
     Serial.println("EVENT,LIFT_HOME_LEFT_UPPER");
   }
 
-  // Chạm đáy luôn là mốc home thật. Khi đang nâng, vẫn cho phép
-  // động cơ đi ra khỏi công tắc; chiều hạ bị chặn ngay lập tức.
+  // A fresh trigger starts the bounded HOME-only exception. Normal downward
+  // motion is blocked at the switch and never redefines the settled zero.
   if (lowerLimit.active) {
-    const bool movingUp = liftMode == LiftMode::MOVING && liftTargetSteps > 0;
-    if (liftMode == LiftMode::HOMING || !movingUp) {
-      if (!liftHomed || liftMode != LiftMode::IDLE || liftStepper.currentPosition() != 0) {
-        acceptLowerHome();
-      }
-    } else if (!liftHomed) {
-      liftStepper.setCurrentPosition(0);
-      liftHomed = true;
+    if (liftMode == LiftMode::HOMING && liftHomeStage == LiftHomeStage::SEEK_LOWER) {
+      liftStepper.setSpeed(0.);
+      liftHomeStage = LiftHomeStage::HOME_SETTLE;
+      liftHomeStageStartSteps = liftStepper.currentPosition();
+      liftHomeStageStartedMs = nowMs;
+      Serial.println("EVENT,LIFT_HOME_SETTLE_1MM");
+      return;
+    }
+    if (liftMode == LiftMode::MOVING && liftTargetSteps < liftStepper.currentPosition()) {
+      stopLift(LiftMode::IDLE);
+      return;
     }
   }
 
@@ -314,13 +379,6 @@ void updateLift(uint32_t nowMs) {
       liftTargetSteps > liftStepper.currentPosition()) {
     liftStepper.setCurrentPosition(metresToSteps(LIFT_MAX_POSITION_M));
     stopLift(LiftMode::IDLE);
-  }
-
-  if ((liftMode == LiftMode::MOVING || liftMode == LiftMode::HOMING) &&
-      nowMs - liftLastCommandMs > LIFT_COMMAND_TIMEOUT_MS) {
-    stopLift(liftHomed ? LiftMode::IDLE : LiftMode::UNHOMED);
-    Serial.println("EVENT,LIFT_STOPPED,COMM_TIMEOUT");
-    return;
   }
 
   if (liftMode == LiftMode::HOMING) {

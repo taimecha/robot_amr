@@ -1,3 +1,7 @@
+> Bản triển khai hiện tại **r3-approved-lattice**: xem [r3/README.md](r3/README.md) và [báo cáo](../pi5_docking_diagnostics/TRIEN_KHAI_R3.md). Các demo quintic/85mm/12mm và kết quả lịch sử bên dưới không phải luồng r3 và không được dùng làm nghiệm thu mới.
+
+Giao diện mới: `./simulation/launch_r3_sim.sh gui` — camera/nhận diện, nhập khoảng cách–ngang–góc theo **tâm gốc càng**, xem đúng hai đường planner/thực tế và chủ động chạy mô phỏng. [Cách dùng và giới hạn](r3/README.md).
+
 # Mô phỏng docking trên laptop Ubuntu
 
 Chạy từ gốc repo:
