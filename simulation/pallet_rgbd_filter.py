@@ -5,7 +5,7 @@ import math
 import numpy as np
 
 
-def front_edge_yaw(forward, lateral):
+def front_edge_yaw(forward, lateral, max_angle_deg=20):
     """Face yaw from the nearest top-deck edge; left-farther is positive."""
     forward=np.asarray(forward,dtype=float)
     lateral=np.asarray(lateral,dtype=float)
@@ -37,7 +37,7 @@ def front_edge_yaw(forward, lateral):
     if not np.isfinite(slope) or np.median(abs(residual))>.012:
         raise ValueError('front edge depth is not one stable line')
     angle=math.atan(float(slope))
-    if abs(angle)>math.radians(20):
+    if max_angle_deg is not None and abs(angle)>math.radians(max_angle_deg):
         raise ValueError('measured pallet heading outside 20 degrees')
     return angle
 

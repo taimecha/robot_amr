@@ -40,6 +40,10 @@ constexpr float HOMING_VELOCITY_M_S = 0.010F;
 constexpr uint32_t HOMING_TIMEOUT_MS = 65000;
 constexpr uint32_t HOMING_RELEASE_TIMEOUT_MS = 5000;
 constexpr float HOMING_RELEASE_MAX_TRAVEL_M = 0.025F;
+// Approved r3: final HOME is 1 mm below the freshly detected lower trigger.
+constexpr long HOME_SETTLE_STEPS = static_cast<long>(STEPS_PER_MM);  // 1 mm
+constexpr uint32_t HOME_SETTLE_TIMEOUT_MS = 1000;
+static_assert(HOME_SETTLE_STEPS > 0, "HOME settle requires calibrated steps/mm");
 constexpr float ENDSTOP_POSITION_TOLERANCE_M = 0.010F;
 
 constexpr float MAX_SPEED_STEPS_S = MAX_VELOCITY_M_S * 1000.0F * STEPS_PER_MM;
@@ -64,6 +68,7 @@ enum class FaultCode : uint8_t {
   BOTH_LIMITS_ACTIVE,
   HOMING_TIMEOUT,
   HOMING_RELEASE_FAILED,
+  HOME_SETTLE_FAILED,
   ENDSTOP_POSITION_MISMATCH,
 };
 
@@ -72,6 +77,7 @@ enum class HomingStage : uint8_t {
   RELEASE_LOWER,
   RELEASE_UPPER,
   SEEK_LOWER,
+  HOME_SETTLE,
 };
 
 struct DebouncedInput {
@@ -128,6 +134,7 @@ uint32_t lastCommandMs = 0;
 uint32_t homingStartedMs = 0;
 uint32_t homingStageStartedMs = 0;
 long homingReleaseStartSteps = 0;
+long homeSettleStartSteps = 0;
 uint32_t lastStatePublishMs = 0;
 
 float stepsToMetres(long steps) {
@@ -156,6 +163,8 @@ const char *faultName(FaultCode code) {
       return "HOMING_TIMEOUT";
     case FaultCode::HOMING_RELEASE_FAILED:
       return "HOMING_RELEASE_FAILED";
+    case FaultCode::HOME_SETTLE_FAILED:
+      return "HOME_SETTLE_FAILED";
     case FaultCode::ENDSTOP_POSITION_MISMATCH:
       return "ENDSTOP_POSITION_MISMATCH";
   }
@@ -619,7 +628,11 @@ void handleLimitSwitches(uint32_t nowMs) {
         return;
       }
       if (lowerActive) {
-        completeHoming();
+        stopMotionImmediately();
+        homeSettleStartSteps = stepper.currentPosition();
+        homingStageStartedMs = nowMs;
+        homingStage = HomingStage::HOME_SETTLE;
+        Serial.println("EVENT,HOME_SETTLE_1MM");
       }
     }
     return;
@@ -642,8 +655,7 @@ void handleLimitSwitches(uint32_t nowMs) {
   const long direction = stepper.distanceToGo();
   if (armed && lowerActive && direction < 0) {
     stopMotionImmediately();
-    stepper.setCurrentPosition(metresToSteps(LIFT_MIN_M));
-    stepper.moveTo(stepper.currentPosition());
+    // Do not redefine the final settled zero at the earlier switch trigger.
     return;
   }
 
@@ -673,6 +685,26 @@ void runMotion(uint32_t nowMs) {
   }
 
   if (homing) {
+    if (homingStage == HomingStage::HOME_SETTLE) {
+      const long travelled = homeSettleStartSteps - stepper.currentPosition();
+      if (!lowerLimit.active() || upperLimit.active() || travelled < 0 ||
+          travelled > HOME_SETTLE_STEPS ||
+          static_cast<uint32_t>(nowMs - homingStageStartedMs) > HOME_SETTLE_TIMEOUT_MS ||
+          static_cast<uint32_t>(nowMs - homingStartedMs) > HOMING_TIMEOUT_MS) {
+        homed = false;
+        latchFault(FaultCode::HOME_SETTLE_FAILED);
+        return;
+      }
+      if (travelled == HOME_SETTLE_STEPS) {
+        completeHoming();
+        return;
+      }
+      // One runSpeed call emits at most one step. Count every step and never
+      // permit ordinary SET motion to use this lower-limit exception.
+      stepper.setSpeed(-HOMING_SPEED_STEPS_S);
+      stepper.runSpeed();
+      return;
+    }
     if (homingStage == HomingStage::RELEASE_LOWER ||
         homingStage == HomingStage::RELEASE_UPPER) {
       const float releaseTravel = fabsf(stepsToMetres(

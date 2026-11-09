@@ -47,8 +47,9 @@ def generate_launch_description():
     existing_resource_path = os.environ.get('GZ_SIM_RESOURCE_PATH', '')
     gazebo_resource_path = os.pathsep.join(
         path for path in (model_path, existing_resource_path) if path)
-    xacro_file = os.path.join(
-        package_share, 'description', 'robot.urdf.xacro')
+    # Optional simulation-only asset bundle; real_hardware launch never reads it.
+    xacro_file = os.environ.get('TAI_SIM_ROBOT_XACRO', os.path.join(
+        package_share, 'description', 'robot.urdf.xacro'))
     rviz_config = LaunchConfiguration('rviz_config')
     controllers_file = os.path.join(
         package_share, 'config', 'ros2_controllers.yaml')

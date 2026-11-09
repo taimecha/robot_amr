@@ -158,12 +158,17 @@ def fault_cases():
 
 class ShadowFollower:
     """Minimal unicycle path follower with fake odometry and a latched stop."""
-    def __init__(self, path):
+    def __init__(self, path, *, max_speed=.10, acceleration=.08, dt=.05,
+                 pre_dock_completion=True):
         self.path=path
         self.state='READY'
         self.index=0
         self.v=0.
         self.reason='operator start required'
+        self.max_speed=min(.15, max(0., max_speed))
+        self.acceleration=acceleration
+        self.dt=dt
+        self.pre_dock_completion=pre_dock_completion
 
     def start(self, operator_start):
         if operator_start and self.state=='READY':
@@ -185,11 +190,11 @@ class ShadowFollower:
         dist=math.hypot(tx-x,ty-y)
         alpha=math.atan2(ty-y,tx-x)-yaw
         curvature=2*math.sin(alpha)/max(.10,dist)
-        self.v=min(.10,self.v+.08*.05)
+        self.v=min(self.max_speed,self.v+self.acceleration*self.dt)
         w=max(-.20,min(.20,self.v*curvature))
         if self.index>=200:
             self.state='FOLLOW_STRAIGHT'
-        if math.hypot(self.path[-1][0]-x,self.path[-1][1]-y)<.02:
+        if self.pre_dock_completion and math.hypot(self.path[-1][0]-x,self.path[-1][1]-y)<.02:
             self.state='WAIT_INSERTION_VERIFICATION'
             self.reason='pre-dock reached; insertion remains unverified'
             return 0.,0.

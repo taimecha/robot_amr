@@ -12,6 +12,11 @@ def clamp(value, bound):
     return max(-bound, min(bound, value))
 
 
+def stationary_heading_command(current_yaw, goal_yaw, max_angular_rps):
+    """Existing stationary alignment law, shared with fixed-path phase adapter."""
+    return clamp(1.2*wrap(goal_yaw-current_yaw), max_angular_rps)
+
+
 @dataclass(frozen=True)
 class AlignmentConfig:
     standoff_m: float = 1.20
@@ -269,7 +274,7 @@ class AlignmentController:
             return self.snapshot()
         if rho < .02:
             v = 0.0
-            w = 1.2*wrap(self.plan_yaw-pose.yaw)
+            w = stationary_heading_command(pose.yaw, self.plan_yaw, c.max_angular_rps)
         else:
             direction = -1 if gx < -.02 else 1
             if direction < 0 and not c.allow_reverse:

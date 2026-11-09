@@ -117,3 +117,22 @@ The upper endstop also remains an enforced hard boundary while homing releases
 the lower switch.
 Every geometry/endstop fault invalidates `homed`, so clearing the latch cannot
 bypass a new HOME cycle; only `COMM_TIMEOUT` preserves the coordinate reference.
+
+## r3 HOME reference (2026-11-08)
+
+After a fresh debounced lower trigger, `HOME_SETTLE` continues downward exactly
+1mm (100steps with the existing100steps/mm calibration), bounded by a1s timeout,
+then sets HOME=0. `EVENT,HOME_SETTLE_1MM` precedes `EVENT,HOME_COMPLETE`.
+Watchdog, upper/fault checks and15ms debounce remain active. A lost lower input,
+upper input, wrong direction, timeout or excessive step count aborts settling.
+An initially active lower switch still must release and retrigger.
+
+Ordinary downward SET motion remains blocked at the lower switch. It does not
+reset the settled zero to the earlier trigger position; reaching final HOME
+again requires the explicit HOME sequence. The mission target is+0.080m from
+final HOME (+0.079m relative to the first trigger). The fork top is75mm at the
+trigger and74mm at final HOME, per the user's measurement.
+
+The production combined IMU/lift firmware has the same bounded1mm reference
+change while retaining its own25ms debounce, GPIO wiring and350ms watchdog.
+These source changes are not a flash or hardware-motion authorization.
