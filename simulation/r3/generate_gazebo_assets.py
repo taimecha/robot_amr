@@ -17,7 +17,8 @@ f=out/'description/forklift.xacro'
 s=f.read_text().replace('name="fork_length" value="0.390"','name="fork_length" value="0.385"')
 s=s.replace('name="fork_thickness" value="0.008"','name="fork_thickness" value="0.003"')
 s=s.replace('name="fork_ground_clearance" value="0.065"','name="fork_ground_clearance" value="0.071"')
-s=s.replace('<origin xyz="${mast_profile / 2} 0\n', '<origin xyz="${mast_profile / 2} -0.020\n')
+# The URDF already centers the fork carriage on the chassis Y axis. Keep it
+# centered, matching the user's physical observation and the r3 fixture.
 f.write_text(s)
 world=ET.parse(root/'ros2_ws/worlds/docking_one_pallet.sdf')
 if scenario:

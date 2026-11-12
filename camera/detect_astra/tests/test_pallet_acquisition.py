@@ -12,12 +12,15 @@ class AcquisitionTest(unittest.TestCase):
         session = AcquisitionSession(); session.accuracy_validated = True; session.start(0., 100.)
         return session
 
-    def test_accuracy_unverified_blocks_ready_even_with_stable_samples(self):
+    def test_accuracy_unverified_stops_yolo_but_blocks_ready(self):
         s=self.session(); s.accuracy_validated=False
         for t in (9.,9.4,9.8):self.detection(s,t)
         self.targets(s,10.1)
-        self.assertFalse(s.tick(10.1,110.1))
-        self.assertEqual(s.phase,'ACQUIRING')
+        self.assertTrue(s.tick(10.1,110.1))
+        self.assertEqual(s.phase,'STOPPING_YOLO')
+        s.yolo_stopped(); s.verified()
+        self.assertEqual(s.phase,'CALIBRATION_REQUIRED')
+        self.assertFalse(s.locked)
 
     def detection(self, s, t, confidence=.9, valid=True):
         s.detection(100+t,t,100+t,valid,confidence,(10.,10.,110.,90.),'pallets')

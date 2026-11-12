@@ -54,7 +54,7 @@ Sau khi model sẵn sàng, YOLO tự nhận diện 3–5 giây rồi tắt. Đ�
 
 Đã có theo dõi và đo, lọc góc trên web, báo không cần chỉnh hướng khi |góc sau lọc| < 2°.
 Bộ căn riêng `scripts/align_pallet.py` tạo điểm chờ trong `odom`, mặc định chỉ xuất vận tốc đề xuất.
-Điểm dừng gốc càng 1,20 m, sai số X tối đa ±2 cm, lệch ngang dưới 2 cm, góc dưới 2°.
+Đích B của quỹ đạo r3 đặt gốc càng cách mặt pallet 2 cm; bộ theo dõi RGB-D không tự phát lệnh bánh.
 Xem [ALIGNMENT.md](ALIGNMENT.md) về nút căn riêng, lớp tránh vật cản và điều kiện chạy thật.
 Các node nhận diện/đo không phát lệnh xe. Chưa có tiến càng trong vùng mù hoặc nâng hàng.
 

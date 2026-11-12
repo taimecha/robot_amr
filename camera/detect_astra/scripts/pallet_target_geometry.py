@@ -166,6 +166,13 @@ def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
     # measured depth is uneven along the legs.
     center_row = (common_top + common_bottom) // 2
     pitch_rad = math.radians(pitch_deg)
+    heading_diagnostics = {}
+    if heading_floor_reference:
+        from pallet_plane_heading import floor_depth_skew
+        # One corrected depth geometry must own both the opening position and
+        # plane yaw. Mixing a static-skew position with a per-frame-skew angle
+        # describes a target that does not exist in either corrected cloud.
+        inverse_depth_x_slope, heading_diagnostics = floor_depth_skew(depth_mm,intrinsics)
     samples, rows = _sample_front_legs(
         (left, right), depth_mm, intrinsics, common_top, common_bottom, pitch_rad,
         inverse_depth_x_slope, reference_u, min_z_m, max_z_m, min_depth_samples)
@@ -177,11 +184,13 @@ def measure_pallet_target(mask, bbox, depth_mm, intrinsics, *, pitch_deg=20.0,
                           separation)
     if abs(face_yaw) > math.radians(20):
         raise ValueError("front-face yaw outside measurement range")
-    heading_diagnostics = {}
     if heading_floor_reference:
         from pallet_plane_heading import pallet_plane_heading
         face_yaw,heading_diagnostics = pallet_plane_heading(
-            depth_mm,intrinsics,(left,right),pitch_rad,reference_u)
+            depth_mm,intrinsics,(left,right),pitch_rad,reference_u,
+            depth_x_slope=inverse_depth_x_slope,floor_diagnostics=heading_diagnostics)
+        heading_diagnostics.update(position_depth_x_slope=inverse_depth_x_slope,
+                                   depth_correction_shared=True)
 
     # Inner edges are obtained from the mask; use median leg depth instead of
     # boundary depth, which is often mixed with the background by registration.

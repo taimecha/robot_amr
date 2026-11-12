@@ -15,13 +15,12 @@ import rclpy
 from rclpy.executors import SingleThreadedExecutor
 from rclpy.node import Node
 from rclpy.parameter import Parameter
-from geometry_msgs.msg import Twist, TwistStamped, TransformStamped
+from geometry_msgs.msg import Twist, TransformStamped
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String, Bool
 from std_srvs.srv import SetBool, Trigger
 from rclpy.qos import QoSProfile, DurabilityPolicy
-from lifecycle_msgs.srv import ChangeState
 from tf2_ros import TransformBroadcaster
 from detected_pallets_interfaces.msg import PalletTarget
 from align_pallet import PalletAlignmentNode, COMMAND
@@ -147,60 +146,9 @@ class AlignmentRosTest(unittest.TestCase):
         self.assertTrue(self.service(False).success)
         self.assertFalse(self.alignment.core.active)
 
-    def test_execute_requires_verified_chain_and_monitor_stops_obstacles(self):
-        self.start_node(execute=True)
-        self.spin_until(lambda: self.alignment.core.confirmed >= 3)
-        self.assertFalse(self.service(True).success)
-        self.assertEqual((self.alignment.core.v, self.alignment.core.w), (0., 0.))
-        self.last_target.status = 'TRACKED_RGBD'  # Known bias must be applied before real commands.
-        self.alignment.on_target(self.last_target)
-        self.assertIsNone(self.alignment.core.target)
-        self.assertEqual((self.alignment.core.v, self.alignment.core.w), (0., 0.))
-        # Real Nav2 collision monitor, fake final receiver: domain 231 has no actuators.
-        self.monitor = subprocess.Popen([
-            '/opt/ros/jazzy/lib/nav2_collision_monitor/collision_monitor', '--ros-args',
-            '-r', '__node:=pallet_alignment_collision_monitor', '--params-file',
-            str(ROOT/'config/pallet_alignment_collision.yaml')],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        change = self.node.create_client(ChangeState, '/pallet_alignment_collision_monitor/change_state')
-        self.spin_until(change.service_is_ready)
-        for transition in (1, 3):
-            req = ChangeState.Request(); req.transition.id = transition
-            future = change.call_async(req); self.spin_until(future.done)
-            self.assertTrue(future.result().success)
-        stamper = Node('cmd_vel_stamper')
-        for name, value in [('input_topic', '/cmd_vel_safe'), ('output_topic', '/base_controller/cmd_vel'),
-                            ('require_single_publisher', True)]:
-            stamper.declare_parameter(name, value)
-        final_pub = stamper.create_publisher(TwistStamped, '/base_controller/cmd_vel', 1)
-        safe = []
-        def receive(msg):
-            safe.append((msg.linear.x, msg.angular.z))
-            stamped = TwistStamped(); stamped.twist = msg
-            final_pub.publish(stamped)
-        stamper.create_subscription(Twist, '/cmd_vel_safe', receive, 1)
-        self.executor.add_node(stamper); self.extra.append(stamper)
-        self.spin_until(lambda: self.status['ready'])
-        self.assertTrue(self.service(True).success)
-        self.spin_until(lambda: any(v > 0 for v, w in safe))
-        self.obstacle = True
-        safe.clear()
-        self.spin_until(lambda: len(safe) >= 8)
-        self.assertEqual(safe[-1], (0., 0.))
-        self.emit_scan = False
-        self.spin_until(lambda: self.status['state'] == 'BLOCKED')
-        self.assertFalse(self.status['active'])
-        self.assertEqual(self.commands[-1], (0., 0.))
-        self.emit_scan = True
-        self.obstacle = False
-        self.spin_until(lambda: self.status['ready'])
-        self.assertTrue(self.service(True).success)
-        # A competing source must disarm the alignment node.
-        competing = self.node.create_publisher(Twist, '/cmd_vel_safe', 1)
-        self.spin_until(lambda: self.status['state'] == 'BLOCKED')
-        self.assertFalse(self.status['active'])
-        self.assertEqual(self.commands[-1], (0., 0.))
-        self.node.destroy_publisher(competing)
+    def test_retired_alignment_cannot_create_real_command_publisher(self):
+        with self.assertRaisesRegex(RuntimeError, 'ngừng chạy thật'):
+            PalletAlignmentNode(execute=True)
 
     def test_odometry_jump_disarms_and_invalidates_world_target(self):
         self.start_node()

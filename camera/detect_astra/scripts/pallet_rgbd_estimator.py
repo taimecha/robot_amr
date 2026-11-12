@@ -53,6 +53,10 @@ class RGBDTargetEstimator:
             opening_width_tolerance_m=a.opening_width_tolerance_m)
         if a.measurement_bias is not None:
             bias = a.measurement_bias
+            # Keep the camera-frame value for an explicit operator report.
+            # The configured lateral offset is the total correction, not an
+            # extra term added after the old empirical lateral bias.
+            m['opening_lateral_camera_raw_m'] = m['opening_lateral_m']
             if getattr(a,'heading_floor_reference',False):
                 # The old angular residual was fitted to the old depth skew.
                 # Preserve its position offsets, never apply it a second time

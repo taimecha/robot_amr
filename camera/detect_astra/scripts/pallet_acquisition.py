@@ -108,9 +108,6 @@ class AcquisitionSession:
         semantic = (len(self.detections) >= 3 and wall-self.detections[-1][1] <= 1.0
                     and -.05 <= ros-self.detections[-1][0] <= self.seed_age_s)
         if elapsed >= self.MIN_SECONDS and semantic and self.measurement_ready(wall, ros):
-            if not self.accuracy_validated:
-                self.reason = 'Chưa có xác nhận sai số tuyệt đối từ hiệu chuẩn độc lập'
-                return False
             self.phase, self.locked = 'STOPPING_YOLO', False
             self.reason = 'Đang chờ inference kết thúc và heartbeat YOLO tắt'
             return True
@@ -123,8 +120,12 @@ class AcquisitionSession:
 
     def verified(self):
         if self.phase == 'VERIFYING_RGBD':
-            self.phase, self.locked = 'READY', True
-            self.reason = 'Đã xác minh; chờ người vận hành bắt đầu'
+            if self.accuracy_validated:
+                self.phase, self.locked = 'READY', True
+                self.reason = 'Đã xác minh; chờ người vận hành bắt đầu'
+            else:
+                self.phase, self.locked = 'CALIBRATION_REQUIRED', False
+                self.reason = 'YOLO đã tắt; chưa xác nhận sai số tuyệt đối để chạy xe'
 
     def pause(self):
         if self.phase == 'ACQUIRING':

@@ -121,12 +121,16 @@ class DetectionNode(Node):
             if self.acquisition.phase in ('VERIFYING_RGBD', 'READY') and (not valid or geometry_reset):
                 if self.alignment_active:
                     self.invalidate_locked('Phép đo pallet mất ổn định trong khi xe đang căn')
+                elif not self.acquisition.accuracy_validated:
+                    self.acquisition.phase = 'CALIBRATION_REQUIRED'
+                    self.acquisition.locked = False
+                    self.acquisition.reason = 'YOLO đã tắt; RGB-D mất dấu, cần nhận diện lại sau hiệu chuẩn'
                 else:
                     self.start_locked()
                 return
             if (self.measure_after_ros is not None and stamp_ns(msg)/1e9 > self.measure_after_ros
                     and not self.inference_enabled and not self.inference_busy
-                    and self.acquisition.phase in ('VERIFYING_RGBD', 'READY')):
+                    and self.acquisition.phase in ('VERIFYING_RGBD', 'READY', 'CALIBRATION_REQUIRED')):
                 self.rgbd_health.sample(stamp_ns(msg)/1e9, wall, now, valid,
                     msg.camera_forward_m, msg.opening_lateral_m, msg.entry_heading_rad)
 
@@ -200,8 +204,14 @@ class DetectionNode(Node):
                     self.acquisition.verified()
                 elif (self.acquisition.target_received is not None
                       and wall-self.acquisition.target_received > 1.):
-                    # A lost target before lock starts a fresh stationary session.
-                    self.start_locked()
+                    # Do not re-enable YOLO indefinitely when accuracy is not
+                    # validated; save Pi CPU and leave motion disarmed.
+                    if self.acquisition.accuracy_validated:
+                        self.start_locked()
+                    else:
+                        self.acquisition.phase = 'CALIBRATION_REQUIRED'
+                        self.acquisition.locked = False
+                        self.acquisition.reason = 'YOLO đã tắt; RGB-D mất dấu, cần nhận diện lại sau hiệu chuẩn'
             remaining = []
             for future, deadline in self.prepare_waiters:
                 if future.done():

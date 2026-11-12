@@ -53,7 +53,7 @@
     </material>
 
     <xacro:macro name="mast_sensor_mount"
-                 params="parent include_lidar:=true camera_pitch:=0.0">
+                 params="parent include_lidar:=true camera_pitch:=0.0 camera_y:=0.0">
         <!-- This mount frame lies at the designed high scan plane. The mast
              is fixed, so lifting the fork carriage does not move the camera. -->
         <joint name="sensor_mount_joint" type="fixed">
@@ -117,7 +117,7 @@
                                    x="${lidar_x_on_mount}" y="0" z="0"/>
         </xacro:if>
         <xacro:astra_pro_camera parent="sensor_mount_link"
-                                x="${camera_x_on_mount}" y="0"
+                                x="${camera_x_on_mount}" y="${camera_y}"
                                 z="${camera_eye_height_ground
                                      - lidar_scan_height_ground}"
                                 pitch="${camera_pitch}"/>

@@ -16,7 +16,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from docking_preview import ShadowFollower
-from r3_core import (FrozenPlan, collision, compose, dense, digest, errors, fork_for_base,
+from r3_core import (R3_MIN_STRAIGHT_CLEARANCE_M, FrozenPlan, collision, compose, dense, digest, errors, fork_for_base,
                      goal_base, inverse, polygons, rectangle, validate_phases, wrap)
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -151,6 +151,13 @@ class FixedPlanFollower:
     Rotation uses the existing pallet_alignment_core stationary law. Pure
     Pursuit still steers translating phases; target vision never enters here.
     """
+    # The drive cannot resolve a one-micrometre endpoint. Keep this below the
+    # real trial's 5 mm terminal gap check and verify the actual odom there.
+    endpoint_tolerance_m = .003
+    min_straight_entry_clearance_m = R3_MIN_STRAIGHT_CLEARANCE_M
+    approach_brake_m = .05
+    alignment_done_deg = .25
+    alignment_settle_s = .30
     def __init__(self, phases, target, geometry):
         self.phases, self.target, self.g = phases, target, geometry
         self.phase = 0
@@ -161,6 +168,7 @@ class FixedPlanFollower:
         self.align_goal = None
         self.w = 0.
         self.join_stopped_s = 0.
+        self.align_stable_s = 0.
         self.curvature = []
 
     def align(self, pose, goal_yaw, dt):
@@ -184,25 +192,43 @@ class FixedPlanFollower:
         self.state = self.phases[0]['type']
         return True
 
-    def step(self, pose, dt=.05, obstacle=False, odom_valid=True):
+    def step(self, pose, dt=.05, obstacle=False, odom_valid=True, c_verified=True):
         if obstacle or not odom_valid:
             self.state = 'STOP_LATCHED'
             self.reason = 'obstacle stop' if obstacle else 'invalid odom'
         if self.state in ('PREVIEW_WAIT', 'STOP_LATCHED', 'STOPPED'):
             return 0., 0.
         if self.align_goal is not None:
-            if abs(wrap(self.align_goal-pose[2])) < math.radians(.02):
-                self.align_goal = None
+            if abs(wrap(self.align_goal-pose[2])) < math.radians(self.alignment_done_deg):
                 self.w = 0.
+                self.align_stable_s += dt
+                if self.align_stable_s < self.alignment_settle_s:
+                    return 0., 0.
+                e = errors(pose, self.target, self.g)
+                if (self.phase+1 < len(self.phases)
+                        and self.phases[self.phase+1]['type'] == 'STRAIGHT'
+                        and (abs(e['ey_m']) > self.g['max_lateral']
+                             or abs(e['yaw_error_rad']) > math.radians(self.g['max_yaw_deg'])
+                             or e['gap_m']-self.g['fork_length']
+                             < self.min_straight_entry_clearance_m)):
+                    self.state, self.reason = 'STOP_LATCHED', 'C alignment or fork-tip clearance failed'
+                    return 0., 0.
+                self.align_goal = None
+                self.align_stable_s = 0.
+                self.w = 0.
+                if not c_verified:
+                    self.state = 'WAIT_C_RGBD'
+                    return 0., 0.
                 self.phase += 1
                 self.follower = None
                 self.state = self.phases[self.phase]['type']
                 return 0., 0.
+            self.align_stable_s = 0.
             return self.align(pose, self.align_goal, dt)
         phase = self.phases[self.phase]
         if phase['type'] == 'ALIGN_YAW':
             goal_yaw = phase['poses'][-1][2]
-            if abs(wrap(goal_yaw-pose[2])) < math.radians(.02):
+            if abs(wrap(goal_yaw-pose[2])) < math.radians(self.alignment_done_deg):
                 self.phase += 1
                 self.follower = None
                 self.state = self.phases[self.phase]['type']
@@ -227,9 +253,41 @@ class FixedPlanFollower:
             if abs(e['ey_m']) > self.g['max_lateral'] or abs(e['yaw_error_rad']) > math.radians(self.g['max_yaw_deg']):
                 self.state, self.reason = 'STOP_LATCHED', 'terminal yaw/lateral limit exceeded'
                 return 0., 0.
-        # Numerical convergence threshold is NOT an approved real stop tolerance.
-        # Final acceptance remains INCOMPLETE while stop_gap_tolerance is null.
-        if remaining <= 1e-6:
+        if remaining < -self.endpoint_tolerance_m:
+            self.state, self.reason = 'STOP_LATCHED', 'phase endpoint overshot'
+            return 0., 0.
+        if (phase['type'] == 'APPROACH' and self.phase+1 < len(self.phases)
+                and self.phases[self.phase+1]['type'] == 'STRAIGHT'
+                and remaining <= self.approach_brake_m):
+            # Stop before C so Pure Pursuit cannot chase millimetres of
+            # lateral error with a large yaw command at the path endpoint.
+            self.v = self.w = 0.
+            if self.follower is not None:
+                self.follower.v = 0.
+            if e['gap_m']-self.g['fork_length'] < self.min_straight_entry_clearance_m:
+                self.state, self.reason = 'STOP_LATCHED', 'fork-tip clearance lost before C'
+                return 0., 0.
+            self.join_stopped_s += dt
+            if self.join_stopped_s < .5:
+                self.state = 'C_SETTLE'
+                return 0., 0.
+            if abs(wrap(end[2]-pose[2])) >= math.radians(self.g['max_yaw_deg']):
+                self.align_goal = end[2]
+                self.align_stable_s = 0.
+                self.state = 'ALIGN_YAW'
+                return 0., 0.
+            if abs(e['ey_m']) > self.g['max_lateral']:
+                self.state, self.reason = 'STOP_LATCHED', 'C lateral limit exceeded'
+                return 0., 0.
+            if not c_verified:
+                self.state = 'WAIT_C_RGBD'
+                return 0., 0.
+            self.phase += 1
+            self.follower = None
+            self.join_stopped_s = 0.
+            self.state = self.phases[self.phase]['type']
+            return 0., 0.
+        if abs(remaining) <= self.endpoint_tolerance_m:
             self.v = 0.
             if self.phase+1 < len(self.phases):
                 # Existing settle interval: do not switch curvature/align
@@ -239,20 +297,39 @@ class FixedPlanFollower:
                 if self.join_stopped_s < .5:
                     return 0., 0.
                 self.join_stopped_s = 0.
-                if abs(wrap(end[2]-pose[2])) >= math.radians(.02):
+                # Correct yaw while the fork tips are still clear of the
+                # pallet; yaw error alone can shift the fork-root lateral
+                # position past the 9 mm insertion tolerance.
+                if abs(wrap(end[2]-pose[2])) >= math.radians(self.g['max_yaw_deg']):
                     self.align_goal = end[2]
+                    self.align_stable_s = 0.
                     self.state = 'ALIGN_YAW'
+                    return 0., 0.
+                if (abs(e['ey_m']) > self.g['max_lateral']
+                        or e['gap_m']-self.g['fork_length']
+                        < self.min_straight_entry_clearance_m):
+                    self.state, self.reason = 'STOP_LATCHED', 'C lateral or fork-tip clearance failed'
                     return 0., 0.
                 self.phase += 1
                 self.follower = None
                 self.state = self.phases[self.phase]['type']
+                return 0., 0.
+            if abs(e['ey_m']) > self.g['max_lateral']:
+                self.state, self.reason = 'STOP_LATCHED', 'phase endpoint lateral limit exceeded'
+                return 0., 0.
+            if (abs(e['gap_m'] - self.g['stop_gap']) > .005
+                    or abs(e['yaw_error_rad']) > math.radians(self.g['max_yaw_deg'])):
+                self.state, self.reason = 'STOP_LATCHED', 'terminal odom goal criteria failed'
                 return 0., 0.
             self.state = 'STOPPED'
             self.w = 0.
             return 0., 0.
         previous_v = self.v
         v, w = self.follower.step(*pose)
-        v = min(v, math.sqrt(2*self.g['acceleration']*max(0., remaining)), remaining*.8)
+        # Brake by available deceleration. A linear remaining-distance cap
+        # drove the real robot below 1 mm/s near C, where its motors stalled.
+        # The endpoint check above still sends exact zero at the odom target.
+        v = min(v, math.sqrt(2*self.g['acceleration']*max(0., remaining)))
         # Same PP curvature, with speed profiling applied consistently to omega.
         tx, ty, _, _ = self.follower.path[min(len(self.follower.path)-1, self.follower.index+12)]
         dist = math.hypot(tx-pose[0], ty-pose[1])
@@ -276,7 +353,39 @@ class FixedPlanFollower:
         v=max(0.,min(self.g['max_speed'],v))
         # Reset speed state to the actual profile output; no minimum-speed floor.
         self.follower.v = self.v = v
-        w = max(-self.g['max_omega'],min(self.g['max_omega'],v*kappa))
+        if phase.get('tracking_controller') == 'pose_feedback':
+            # Follow the local path tangent rather than a point 12 cm ahead.
+            # A fixed-distance Pure Pursuit target cuts across a shallow S and
+            # responds late to its change of turn direction at this low speed.
+            i = min(self.follower.index, len(path)-2)
+            ref, nxt = path[i], path[i+1]
+            ds = math.dist(ref[:2], nxt[:2])
+            signed_curvature = wrap(nxt[2]-ref[2])/max(ds, 1e-9)
+            lateral = (-(pose[0]-ref[0])*math.sin(ref[2])
+                       +(pose[1]-ref[1])*math.cos(ref[2]))
+            heading = wrap(pose[2]-ref[2])
+            desired_w = v*signed_curvature - 2.*math.sin(heading) - 16.*v*lateral
+            # The same feedback law runs through the straight lead-in, so
+            # lateral feedback is not discarded at its boundary.
+            if (phase['type'] == 'APPROACH'
+                    and remaining <= phase.get('straight_lead_in_m', 0.)
+                    and abs(e['ey_m']) > self.g['max_lateral']):
+                self.state, self.reason = 'STOP_LATCHED', 'straight lead-in lateral limit exceeded'
+                return 0., 0.
+        elif (phase['type'] == 'APPROACH' and phase.get('straight_lead_in_m', 0.) > 0
+                and remaining <= phase['straight_lead_in_m']):
+            # The last approach samples are a straight lead-in. Pure Pursuit
+            # can continue steering for a few millimetres of lateral error
+            # even after yaw reaches the pallet axis, reversing the final
+            # heading. Hold the terminal heading here instead. A large
+            # lateral miss cannot be repaired safely beside the pallet.
+            if abs(e['ey_m']) > self.g['max_lateral']:
+                self.state, self.reason = 'STOP_LATCHED', 'straight lead-in lateral limit exceeded'
+                return 0., 0.
+            desired_w = 1.2*wrap(end[2]-pose[2])
+        else:
+            desired_w = v*kappa
+        w = max(-self.g['max_omega'], min(self.g['max_omega'], desired_w))
         dw = self.g['angular_acceleration']*dt
         w = max(self.w-dw, min(self.w+dw, w))
         self.w = w

@@ -9,7 +9,7 @@ from pallet_alignment_core import AlignmentConfig, AlignmentController, OdomHist
 
 
 class AlignmentTest(unittest.TestCase):
-    def seed(self, c, forward=1.5655, left=0., heading=0.):
+    def seed(self, c, forward=.3855, left=0., heading=0.):
         for t in (.9, .95, 1.):
             c.odom.add(OdomSample(t, 0., 0., 0.))
             c.observe(t, t, forward, left, heading)
@@ -18,7 +18,7 @@ class AlignmentTest(unittest.TestCase):
         c = AlignmentController()
         self.seed(c)
         self.assertEqual(c.config.lateral_tolerance_m, .02)
-        self.assertEqual(c.config.standoff_m, 1.2)
+        self.assertEqual(c.config.standoff_m, .02)
         self.assertEqual(c.config.heading_tolerance_deg, 2.)
         c.tick(1., 1.)
         self.assertAlmostEqual(c.goal[0], 0.)
@@ -74,7 +74,7 @@ class AlignmentTest(unittest.TestCase):
         self.assertAlmostEqual(c.target[2], 0.)
 
     def test_no_reverse_or_motion_outside_vision_range(self):
-        for forward, left, yaw in ((1.50, 0, 0), (1.5655, .1, 0), (2., 0, 19.)):
+        for forward, left, yaw in ((.30, 0, 0), (.3855, .1, 0), (2., 0, 19.)):
             c = AlignmentController()
             self.seed(c, forward, left, math.radians(yaw))
             c.start(1., 1.)

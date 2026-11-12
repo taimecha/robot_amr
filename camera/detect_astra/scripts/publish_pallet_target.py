@@ -20,6 +20,7 @@ from rclpy.executors import ExternalShutdownException, SingleThreadedExecutor
 from rclpy.qos import QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import CompressedImage
 from std_msgs.msg import String
+from std_srvs.srv import SetBool
 from rclpy.qos import DurabilityPolicy
 from detected_pallets_interfaces.msg import PalletDetection, PalletTarget
 
@@ -29,6 +30,7 @@ from astra_rgbd_stream import (CameraReceiver, OPTICAL_FRAME, SHAPE, decode_imag
 from pallet_perception_config import parse_args
 from pallet_rgbd_estimator import RGBDTargetEstimator
 from pallet_messages import empty_message
+from pallet_measurement_evidence import MeasurementEvidenceRecorder
 
 
 class TargetNode(CameraReceiver):
@@ -42,6 +44,8 @@ class TargetNode(CameraReceiver):
         self.recognition_start_ns = 0
         self.recognition_reset_pending = False
         self.info_wait_started_at = None
+        evidence_dir = getattr(args, 'measurement_evidence_dir', None)
+        self.measurement_evidence = MeasurementEvidenceRecorder(evidence_dir) if evidence_dir else None
         self.publisher = self.create_publisher(PalletTarget, '/pallet/target', 1)
         self.preview_publisher = self.create_publisher(
             CompressedImage, '/pallet/preview/compressed',
@@ -50,6 +54,31 @@ class TargetNode(CameraReceiver):
         self.session_sub = self.create_subscription(String, '/pallet/recognition/status', self.on_session,
             QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
                        durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.r3_tracking_paused = False
+        self.create_service(SetBool, '/pallet/r3/pause_target_tracking', self.pause_r3_tracking)
+
+    def pause_r3_tracking(self, request, response):
+        with self.lock:
+            self.r3_tracking_paused = bool(request.data)
+            for queue in self.pending_images.values():
+                queue.clear()
+        response.success = True
+        response.message = ('Pallet tracking paused; locked target remains unchanged'
+                            if request.data else 'Pallet tracking resumed; new YOLO seed required')
+        if request.data and self.measurement_evidence is not None:
+            try:
+                index = self.measurement_evidence.flush()
+                delta = index['closest_capture_delta_s']
+                relation = f'{delta:+.3f} s from locked capture' if delta is not None else 'no locked snapshot'
+                response.message += (f'; RGB-D evidence saved: {self.measurement_evidence.directory}'
+                                     f' ({relation})')
+            except Exception as exc:
+                # Recording failures must be visible without crashing the
+                # measurement node in the middle of its service response.
+                warning = f'RGB-D evidence save failed: {exc}'
+                self.get_logger().error(warning)
+                response.message += '; WARNING: ' + warning
+        return response
 
     def on_session(self, msg):
         try:
@@ -65,6 +94,8 @@ class TargetNode(CameraReceiver):
                 self.recognition_start_ns = start_ns
                 self.recognition_reset_pending = True
                 self.pending_seed = None
+                if self.measurement_evidence is not None:
+                    self.measurement_evidence.clear()
 
     def take_session_reset(self):
         with self.lock:
@@ -222,12 +253,26 @@ def process_pair(pair, args, node, estimator):
               f'seed_age_s={(stamp_ns(rgb_msg)-estimator.seed_stamp_ns)/1e9:.1f}')
     if args.measurement_bias is not None:
         status += '; target_bias_applied'
+        raw_lateral = measurement.get('opening_lateral_camera_raw_m')
+        if raw_lateral is not None:
+            status += (f'; lateral_camera_raw_m={raw_lateral:+.4f}'
+                       f'; lateral_total_bias_m={args.measurement_bias["lateral_bias_m"]:+.4f}'
+                       f'; lateral_fork_m={measurement["opening_lateral_m"]:+.4f}')
         heading_bias = measurement.get('applied_heading_bias_deg',args.measurement_bias['face_yaw_bias_deg'])
         status += (f'; heading_bias_deg={heading_bias:.6f}'
                    f'; pre_bias_entry_deg={math.degrees(measurement["entry_heading_rad"])+heading_bias:.6f}')
     if measurement.get('heading_source'):
         status += (f'; heading_source={measurement["heading_source"]}'
                    f'; heading_depth_x_slope={measurement["heading_depth_x_slope"]:.9f}')
+    if 'position_depth_x_slope' in measurement:
+        status += (f'; position_depth_x_slope={measurement["position_depth_x_slope"]:.9f}'
+                   f'; depth_correction_shared={str(measurement.get("depth_correction_shared", False)).lower()}'
+                   f'; heading_requires_zero_camera_roll={str(measurement.get("heading_requires_zero_camera_roll", False)).lower()}')
+    forward_bias = args.measurement_bias.get('forward_bias_m', 0.) if args.measurement_bias else 0.
+    status += (f'; camera_pitch_deg={args.pitch_deg:.6f}'
+               f'; depth_reference_u={args.reference_u:.6f}'
+               f'; forward_bias_m={forward_bias:.6f}'
+               '; camera_mount_yaw_deg=0.000000; camera_mount_yaw_verified=false')
     msg = empty_message(stamp, status, delta_ms)
     msg.valid = True
     for name in ('camera_forward_m', 'chassis_front_forward_m', 'opening_lateral_m',
@@ -236,6 +281,26 @@ def process_pair(pair, args, node, estimator):
                  'left_forward_m', 'right_forward_m', 'left_depth_samples', 'right_depth_samples'):
         setattr(msg, name, measurement[name])
     msg.yolo_confidence = math.nan
+    recorder = getattr(node, 'measurement_evidence', None)
+    if recorder is not None:
+        try:
+            recorder.record(stamp_ns(rgb_msg), image, depth, intrinsics,
+                            estimator.tracker.mask, estimator.tracker.bbox, measurement,
+                            dict(config=vars(args),
+                                 rgb_stamp_ns=stamp_ns(rgb_msg), depth_stamp_ns=stamp_ns(depth_msg),
+                                 rgb_frame_id=rgb_msg.header.frame_id,
+                                 depth_frame_id=depth_msg.header.frame_id,
+                                 camera_info_stamp_ns=stamp_ns(color_info),
+                                 distortion_model=color_info.distortion_model,
+                                 rgb_depth_delta_ms=delta_ms, registration=registration,
+                                 seed_stamp_ns=estimator.seed_stamp_ns,
+                                 seed_class=estimator.seed_class,
+                                 seed_confidence=estimator.seed_confidence,
+                                 heading_filter_history=list(estimator.history),
+                                 tracker_points=estimator.tracker.points,
+                                 tracker_point_leg_labels=estimator.tracker.labels))
+        except Exception as exc:
+            node.get_logger().error(f'RGB-D evidence buffer failed: {exc}')
     return msg
 
 
@@ -260,6 +325,9 @@ def main():
     next_measurement, next_preview = 0.0, 0.0
     try:
         while rclpy.ok():
+            if node.r3_tracking_paused:
+                time.sleep(.05)
+                continue
             if node.take_session_reset():
                 estimator.reset('new recognition session; waiting for a fresh YOLO seed')
             now = time.monotonic()
@@ -291,6 +359,13 @@ def main():
                 next_preview = now+1/args.preview_fps if args.preview_fps else 0
             if now-last_log >= 2:
                 if msg.valid:
+                    if args.measurement_bias is not None and 'lateral_camera_raw_m=' in msg.status:
+                        report = msg.status.split('; lateral_camera_raw_m=', 1)[1].split('; heading_bias_deg=', 1)[0]
+                        node.get_logger().info('VỊ TRÍ PALLET TRƯỚC KHI CHẠY: camera_raw_m=' +
+                                               report.replace('lateral_total_bias_m', 'bu_ngang_tong_m')
+                                               .replace('lateral_fork_m', 'lech_theo_tam_cang_m') +
+                                               f'; khoang_cach_goc_cang_m={msg.chassis_front_forward_m-.065:.3f}'
+                                               f'; goc_huong_deg={math.degrees(msg.entry_heading_rad):+.2f}')
                     node.get_logger().info(f'RGB-D forward={msg.camera_forward_m:.3f} m, '
                                           f'left={msg.opening_lateral_m:+.3f} m, '
                                           f'entry={math.degrees(msg.entry_heading_rad):+.2f} deg; {msg.status}')

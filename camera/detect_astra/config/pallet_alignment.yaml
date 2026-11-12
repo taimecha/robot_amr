@@ -1,5 +1,5 @@
-# Khoảng cách tính từ MẶT PHẲNG GỐC CÀNG tới mặt trước pallet.
-standoff_m: 1.20
+# Bộ căn xem trước đã ngừng dùng cho chuyển động thật; đích danh định của r3 là 20 mm.
+standoff_m: 0.020
 distance_tolerance_m: 0.02
 lateral_tolerance_m: 0.02  # Điều kiện đạt: |Y| < 2 cm.
 heading_tolerance_deg: 2.0  # Điều kiện đạt: |góc| < 2 độ; vẫn giữ số đo thật.

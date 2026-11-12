@@ -2,10 +2,11 @@
 
 Nhận diện và phân đoạn pallet cùng hàng hóa từ camera RGB Astra Pro bằng YOLO. Model mặc định là `models/best_v3.pt`, gồm ba lớp `Box`, `emty pallet` và `pallets`. Node `/pallet/target` chỉ chọn các lớp pallet để đo, bỏ qua lớp `Box`.
 
-**Giai đoạn hiện tại: kiểm chứng dữ liệu, chưa chạy căn xe thật.** Luồng mới:
+**Lượt thử xe thật có người giám sát:** luồng mới:
 goal nhận diện thành công → YOLO xác nhận pallet → tắt YOLO → theo dõi RGB + Depth
-và đánh giá ổn định. Xem [PERCEPTION_HANDOFF.md](PERCEPTION_HANDOFF.md) để chạy.
-Chỉ triển khai/vận hành căn xe thật khi người dùng yêu cầu bước đó sau.
+và đánh giá ổn định → chốt pose trong odom → lập A → C → B → bám bằng odom.
+Xem [ALIGNMENT.md](ALIGNMENT.md) để chạy. Kế hoạch thử dùng kích thước gần đúng,
+giới hạn 0,05 m/s và không nâng càng.
 
 **Góc giữa mặt trước xe và mặt pallet:** tùy chọn `--heading-floor-reference`
 ước lượng mặt phẳng pallet với tham chiếu sàn, giữ nguyên khoảng cách/X/Y.
@@ -98,16 +99,9 @@ bash scripts/open_pallet_target.sh --model data/runtime_models/best_v3_ncnn_mode
 
 Sau đó chạy `bash scripts/open_pallet_web.sh` trong terminal thứ ba và mở `http://localhost:8765` (chuyển tiếp cổng 8765 nếu dùng VS Code Remote SSH).
 
-### Bộ căn xe đã có — dành cho giai đoạn được yêu cầu sau
+### Đường chạy pallet trên xe thật
 
-Giữ camera, nhận diện và web đang chạy. Trong terminal thứ tư, dùng:
-
-```bash
-cd /home/admin/tai_robot_one/tai_robot_one_community/camera/detect_astra
-bash scripts/open_pallet_alignment_real.sh
-```
-
-Lệnh này mở bánh xe, IMU/EKF, lidar, lớp tránh vật cản và bộ căn CHẠY THẬT; xe chờ bấm **Bắt đầu căn xe** trên web. Điểm dừng tính từ gốc càng tới mặt pallet là **1,20 m**, lệch ngang dưới **2 cm**, góc dưới **2°**. Dừng bộ căn `DRY RUN` cũ bằng Ctrl+C trước khi mở. Hướng dẫn đầy đủ: [ALIGNMENT.md](ALIGNMENT.md).
+Bộ căn lịch sử đã ngừng dùng; `open_pallet_alignment_real.sh` và `align_pallet.py --execute` từ chối khởi động. Kế hoạch A → C → B đặt gốc càng cách mặt pallet 2 cm tại B. Xem [hướng dẫn quỹ đạo và thử xe](ALIGNMENT.md).
 
 ### Bật nhận diện theo giai đoạn để dành CPU cho điều hướng
 
@@ -121,7 +115,7 @@ Mặc định sau khi model sẵn sàng, YOLO chạy **2 FPS trong 3–5 giây**
 
 1. Xác nhận ít nhất ba kết quả YOLO liên tiếp, confidence ≥0,75, cùng lớp và vùng pallet nhất quán.
 2. Yêu cầu phép đo RGB + Depth mới, hợp lệ và ổn định trong ít nhất 0,2 giây. RGB-D chạy ngay từ đầu để kiểm chứng, không suy ra khoảng cách chỉ từ YOLO.
-3. Từ giây thứ 3, nếu đủ các điều kiện thì **tự tắt YOLO**. Hết giây thứ 5 mà chưa đủ điều kiện cũng tắt YOLO và báo nhận diện lại.
+3. Từ giây thứ 3, nếu đủ các điều kiện thì **tự tắt YOLO**. Nếu chưa đủ, tiếp tục nhận diện cho tới khi có kết quả ổn định hoặc người dùng dừng lượt.
 4. Khi đã xác nhận pallet, RGB + Depth tiếp tục đo độc lập. Xe **chờ người dùng bấm căn chỉnh**; không tự chạy sau nhận diện.
 
 Web hiển thị thời gian nhận diện và trạng thái chuyển sang đo. Nút **Nhận diện lại (3–5 giây)** mở lượt mới, xóa xác nhận cũ và yêu cầu seed mới. Nút **Dừng nhận diện** hủy lượt đang nhận diện. Mất dấu RGB không tự bật YOLO lại; phép đo không hợp lệ bị xóa như trước.
@@ -146,7 +140,7 @@ Trạng thái `/pallet/enabled` là trạng thái YOLO, phát mỗi 0,2 giây v�
 
 Web cập nhật CPU mỗi giây: CPU toàn Pi, tổng CPU hai tiến trình YOLO + RGB-D và từng lõi. Hai ô CPU tổng dùng thang 0–100% trên **toàn bộ các lõi**; trên Pi 5 bốn lõi, 25% tương đương một lõi chạy đầy tải. Mỗi thanh lõi riêng dùng thang 0–100% của lõi đó. Khi chạy RGB trực tiếp, ô nhận diện đo chính tiến trình YOLO/web. CPU toàn máy vẫn cập nhật khi các node chưa chạy.
 
-Web hiển thị X tiến, Y ngang (dương về trái xe), khoảng cách phẳng `sqrt(X²+Y²)`, góc hướng từ trục tiến của xe tới tâm lỗ `atan2(Y,X)`, và riêng góc xoay mặt pallet từ node. Gốc tọa độ là `base_link` tại tâm hình học khung xe khi nhìn từ trên xuống, giữa hai trục bánh trước/sau. Gốc `base_footprint` là hình chiếu của nó xuống sàn, có cùng X/Y. Theo `robot_core.xacro`, khung dài 0,601 m nên web lấy `X = chassis_front_forward_m + 0,3005`; `Y = opening_lateral_m`. Cách này giữ nguyên offset camera do node đo cấu hình. Với offset mặc định camera trước mép xe 0,0665 m, X tương đương `camera_forward_m + 0,367` (phù hợp chuỗi URDF `forklift.xacro` và `sensor_mount.xacro`). Camera nằm trên trục giữa Y=0 và không lệch yaw theo mô hình hiện tại.
+Web hiển thị X tiến, Y ngang (dương về trái xe), khoảng cách phẳng `sqrt(X²+Y²)`, góc hướng từ trục tiến của xe tới tâm lỗ `atan2(Y,X)`, và riêng góc xoay mặt pallet từ node. Gốc tọa độ là `base_link` tại tâm hình học khung xe khi nhìn từ trên xuống, giữa hai trục bánh trước/sau. Gốc `base_footprint` là hình chiếu của nó xuống sàn, có cùng X/Y. Theo `robot_core.xacro`, khung dài 0,601 m nên web lấy `X = chassis_front_forward_m + 0,3005`; `Y = opening_lateral_m`. Cách này giữ nguyên offset camera do node đo cấu hình. Với offset mặc định camera trước mép xe 0,0665 m, X tương đương `camera_forward_m + 0,367` (phù hợp chuỗi URDF `forklift.xacro` và `sensor_mount.xacro`). Hồ sơ thử robot dùng một bù ngang +2,5 cm cho mắt camera lệch trái; URDF thật đặt mắt camera tại Y=+0,025 m để biến đổi scan vật cản.
 
 Web chỉ hiện phép đo khi node báo `valid=true`, đúng frame camera, có ảnh cùng timestamp và kết quả mới trong 1 giây. Khi node báo lỗi, mất dữ liệu, số đo không hữu hạn hoặc kết quả cũ, các ô số được xóa. Node đo vẫn giữ ngưỡng tuổi kết quả 500 ms và yêu cầu ba khung hình ổn định. Vị trí hiển thị là tâm lỗ tại mặt trước pallet chiếu trên mặt phẳng sàn; không phải khoảng cách 3D có tính độ cao lỗ. Hiệu chỉnh Depth/góc lắp hiện chỉ là bản đo thử; cần đối chiếu thước trước khi dùng để điều khiển xe.
 
@@ -161,7 +155,7 @@ Bộ lọc góc web dùng EMA theo timestamp chụp ảnh: hằng số thời gi
 Node cũng nhận trực tiếp `--model models/best_v3.pt`. Khi đo trên Pi này, PyTorch xử lý khoảng 465 ms/ảnh còn NCNN FP32 hai luồng khoảng 315 ms/ảnh (640×480, một ảnh RGB thử, có driver camera đang chạy). Hai mask trong ảnh thử có IoU 1,0 giữa hai runtime; đây chưa phải đánh giá toàn bộ tập validation. Một số khung hình thực vẫn có thể bị node bỏ vì quá 500 ms; web sẽ báo lý do và xóa số cũ.
 
 Hướng dẫn đo và bù sai số khoảng cách/góc: [CALIBRATION.md](CALIBRATION.md). Công cụ `scripts/record_pallet_calibration.py` ghi 30 kết quả mới từ chính node RGB + Depth, đối chiếu số đo thước và lưu JSONL; không tự áp dụng hệ số bù hoặc chạy thêm YOLO.
-Hồ sơ bù thực nghiệm ngày 2026-10-31 được bật bằng `--measurement-bias-yaml config/calibration/pallet_target_bias_2026_10_31.yaml`. Xem phạm vi đã đo và sai số kiểm tra trong hướng dẫn trước khi dùng hồ sơ.
+Hồ sơ bù thực nghiệm ngày 2026-10-31 được bật bằng `--measurement-bias-yaml config/calibration/pallet_target_bias_2026_10_31.yaml`. Với lần thử robot theo yêu cầu mới, dùng `config/calibration/pallet_target_bias_robot_2026_11_11.yaml`: bù ngang tổng +2,5 cm thay cho +2,053 cm cũ và in rõ số camera, số bù, kết quả theo tâm càng. Xem [ALIGNMENT.md](ALIGNMENT.md).
 
 Driver Pi cần bộ Orbbec OpenNI2 ARM64 trong `ros2_ws/src/ros2_astra_camera/astra_camera/openni2_redist/arm64` trước khi build (thư mục SDK không đưa vào Git). Trên máy này đã khôi phục bộ SDK từ workspace cũ và build lại driver cùng `detected_pallets_interfaces`.
 

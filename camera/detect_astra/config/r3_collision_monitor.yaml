@@ -1,0 +1,26 @@
+r3_collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_footprint
+    odom_frame_id: odom
+    cmd_vel_in_topic: /pallet/r3/cmd_vel
+    cmd_vel_out_topic: /cmd_vel_safe
+    state_topic: /pallet/r3/collision_state
+    transform_tolerance: 0.1
+    source_timeout: 1.0
+    base_shift_correction: true
+    stop_pub_timeout: 1.0
+    polygons: [StopZone]
+    StopZone:
+      type: polygon
+      points: '[[0.96,0.28],[0.96,-0.28],[0.56,-0.43],[-0.51,-0.43],[-0.51,0.43],[0.56,0.43]]'
+      action_type: stop
+      min_points: 1
+      visualize: true
+      polygon_pub_topic: /pallet/r3/stop_zone
+      enabled: true
+    observation_sources: [lidar]
+    lidar:
+      type: scan
+      topic: /pallet/r3/filtered_lidar_scan
+      enabled: true

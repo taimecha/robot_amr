@@ -74,6 +74,18 @@ class TargetBiasTest(unittest.TestCase):
         changed = apply_target_bias(reference,new)
         self.assertAlmostEqual(math.degrees(changed['entry_heading_rad']),3)
 
+    def test_robot_mount_offset_replaces_old_lateral_bias(self):
+        calibration = Path(__file__).resolve().parents[1]/'config/calibration'
+        robot = load_target_bias(calibration/'pallet_target_bias_robot_2026_11_11.yaml')
+        old = load_target_bias(calibration/'pallet_target_bias_2026_10_31.yaml')
+        raw = self.measurement()
+        raw['opening_lateral_m'] = .058
+        corrected = apply_target_bias(raw, robot)
+        self.assertAlmostEqual(corrected['opening_lateral_m'], .083)
+        self.assertAlmostEqual(corrected['opening_lateral_m'] -
+                               apply_target_bias(raw, old)['opening_lateral_m'],
+                               .025 - old['lateral_bias_m'])
+
 
 if __name__ == '__main__':
     unittest.main()

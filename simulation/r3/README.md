@@ -124,9 +124,45 @@ python3 simulation/r3_camera_preview.py --measurement-json <real-session.json> \
   --output <fresh-preview-directory>
 ```
 
-The live ROS acquisition lifecycle and robot mission launcher are not connected to this preview adapter.
-No new real-motion launcher is provided. Existing historical real launch files do not become r3-compliant
-by these changes; do not treat their defaults as execution approval.
+The live ROS acquisition lifecycle now has a separate supervised trial path in
+`../r3_live_prepare.py` and `../run_r3_live_trial.sh`. It captures recent stationary RGB-D,
+including a fresh valid frame after YOLO stops,
+uses the camera's one +2.5 cm lateral correction, and creates a new provisional plan from current
+odom. The pallet heading uses a fresh floor-referenced front-plane estimate instead of the old
+fixed depth-skew coefficient. The A→C path finishes its bounded quintic bend 12 cm before C and stays straight to C; C→B is also straight. Live A→C plans use signed curvature feedforward plus heading and lateral error feedback at the nearest path reference. The same law continues through the final 12 cm, retaining lateral correction instead of switching abruptly from Pure Pursuit to heading-only control. The one-command real script passes `--stop-at-c`: it brakes before C, waits up to 2 s for the wheels to settle, and ends without a second camera measurement, straight insertion, or lift. During motion it uses the EKF /odom pose for both X/Y and control yaw. Raw IMU yaw is logged for comparison. Missing IMU or more than 2° disagreement between raw IMU and fused odom yaw stops the trial. The geometry is explicitly
+approximate (`confirmed_real_geometry=false`) and requires `--allow-provisional`; the trial speed
+is limited to 0.10 m/s (operator requested), with curvature, acceleration and braking speed limits. The guarded follower and pallet-masked LiDAR scan are in
+`../r3_real_trial.py` and `../r3_real_obstacle_filter.py`. It does not command the lift.
+The one-terminal script starts the missing camera/drive/LiDAR/perception processes and stops only
+those it owns. After the run, `../r3_render_real_result.py` saves `trajectory_result.png` and SVG
+showing the initial robot, pallet, planned base path, planned fork-root path, and recorded odom base
+path. The final robot outline uses odom X/Y and control yaw (EKF odom for new trials, raw IMU for older logs); the title shows both final angles. The image title records `DONE_TRACKING` or the actual stop state. The initial target must be
+fresh when planning and starting the safety filter; the Enter review wait has no time limit and
+does not remeasure the pallet. Motion still requires current odom, IMU and LiDAR at A. The stop report saves final IMU and odom heading errors, their disagreement, estimated lateral position and fork-tip clearance. The plotted orange final robot is a sensor-based estimate, not a physical measurement of fork-to-pallet alignment.
+RGB-D floor correction is now shared by position and heading; earlier trials mixed a static position correction with a per-frame heading correction. The floor method still assumes zero camera roll and unverified camera mounting yaw. It does not establish absolute alignment from temporal stability. Acquisition stores bounded raw capture evidence under `camera_evidence/`, scalar inputs under `plan/capture_samples.json`, and raw wheel/fused odom/IMU under `trial/odom_imu_diagnostics.jsonl`. Capture timestamp differences and calibration assumptions are explicit.
+
+For a stationary reference check at A without starting trajectory tracking:
+
+```bash
+bash /home/admin/tai_robot_one/robot_amr/simulation/run_r3_live_trial.sh --capture-only
+```
+
+This starts acquisition/hardware odom sources, saves evidence after planning, then cleans up its processes. Use a physically checked pallet pose that remains visible to the camera. The old empirical forward residual is not independently validated for the new depth correction.
+
+The current pictured entered-pose plan remains blocked. See `../../camera/detect_astra/ALIGNMENT.md`.
+
+## Read-only preflight for the pictured A→C→B plan
+
+From the repository root, inspect the frozen plan used for the base/fork-root image:
+
+```bash
+python3 simulation/r3_real_preflight.py --plan \
+  simulation/output/r3_camera_measured_preview/centered_20261111_145707/plan_refined/frozen_plan.json
+```
+
+The command makes zero robot commands and exits with code 2 while any static real-plan blocker remains.
+The pictured plan currently uses an entered pose and unconfirmed synthetic geometry. The historical
+alignment launch has been retired; its command does not execute this A→C→B plan.
 
 ## Firmware
 
@@ -136,3 +172,9 @@ lower switch and no longer changes the settled zero at the earlier trigger. Watc
 and existing debounce values are retained. Native tests compile the actual lift source with deterministic
 IO stubs; they verify exact step count, final zero/lift80mm and fault paths, not physical step loss/timing.
 Both projects have been built for ESP32; neither has been flashed.
+
+### Empirical fork-axis lateral residual (2026-11-12)
+
+The separate residual profile `real_trial_lateral_calibration.json` is currently **disabled (0.000 m)**. A +0.025 m axis shift was tried from approximate operator observations, then disabled after trials `153159_MwqW6S` and `153415_nTMQCp` produced a reversed leftward miss and worse heading. The original physical camera mounting correction remains +0.025 m.
+
+A perpendicular offset depends on measured pallet heading as well as translation: at 1.4 m, one degree of heading error changes the offset by about 2.4 cm. Do not identify a constant translational calibration from one approximate perpendicular measurement. The separate report and once-only correction validation remain available, but the live default applies no additional residual. New invocations recognize and freeze a fresh target. Historical plans are unchanged.

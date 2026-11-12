@@ -4,7 +4,7 @@
   "confirmed_real_geometry": false,
   "missing_real": [
     "T_base_camera_optical and housing reference",
-    "fork lateral in base (only F-H=-20mm confirmed)",
+    "surveyed base-to-fork lateral position (fork centered by user and URDF, precision not yet measured)",
     "fork yaw mount",
     "minimum running speed if required by drive",
     "individual tine widths/centers confirmation",
@@ -13,17 +13,17 @@
   "source_notes": {
     "base_fork_x": "repo pallet_alignment.yaml: fork_root_m=0.3655",
     "tines": "User confirms pair outer width155mm and thickness3mm; tine widths/centers still repo estimates53mm/+-51mm",
-    "housing_y": "SYNTHETIC housing y=0; F y=-0.020 follows confirmed F-H; not a real base extrinsic",
+    "housing_y": "SYNTHETIC housing y=+0.020 relative to centered fork/base; F-H=-0.020 confirmed, optical center still unmeasured",
     "pallet": "User correction in this session: clear height=100mm, deck about30mm, total about130mm",
     "fork_z": "User confirms: top75mm at switch trigger; after1mm settle final HOME top74mm; 3mm thickness -> underside71mm",
     "dynamics": "pallet_alignment.yaml omega=0.20, accel=0.08, angular_accel=0.40; demo dt=0.05; no speed floor"
   },
   "base_fork": [
     0.3655,
-    -0.02,
+    0.0,
     0.0
   ],
-  "housing_y": 0.0,
+  "housing_y": 0.02,
   "fork_length": 0.385,
   "fork_pair_width": 0.155,
   "tine_centers_y": [

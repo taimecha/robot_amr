@@ -52,10 +52,17 @@ def floor_depth_skew(depth,intrinsics):
     return slope,dict(heading_floor_samples=int(len(z)),heading_floor_mad_inv_m=mad)
 
 
-def pallet_plane_heading(depth,intrinsics,components,pitch_rad,reference_u=370.):
+def pallet_plane_heading(depth,intrinsics,components,pitch_rad,reference_u=370., *,
+                         depth_x_slope=None, floor_diagnostics=None):
     # The independent horizontal floor removes per-frame depth X skew. Zero
     # camera roll is a prerequisite, not inferred from the pallet's angle.
-    slope,diagnostics = floor_depth_skew(depth,intrinsics)
+    if depth_x_slope is None:
+        slope,diagnostics = floor_depth_skew(depth,intrinsics)
+    else:
+        slope = float(depth_x_slope)
+        if not math.isfinite(slope) or abs(slope) > .0005:
+            raise ValueError('Heading unavailable: invalid shared floor depth correction')
+        diagnostics = dict(floor_diagnostics or {})
     top = max(c['top'] for c in components)+2
     bottom = min(c['bottom'] for c in components)-2
     points=[];labels=[]
@@ -86,5 +93,7 @@ def pallet_plane_heading(depth,intrinsics,components,pitch_rad,reference_u=370.)
     if abs(face_yaw)>math.radians(20):
         raise ValueError('Heading unavailable: pallet-plane yaw outside measurement range')
     diagnostics.update(heading_depth_x_slope=slope,
-                       heading_plane_samples=int(len(points)),heading_source='floor_referenced_plane')
+                       heading_plane_samples=int(len(points)),heading_source='floor_referenced_plane',
+                       heading_requires_zero_camera_roll=True,
+                       heading_camera_mount_yaw_verified=False)
     return face_yaw,diagnostics

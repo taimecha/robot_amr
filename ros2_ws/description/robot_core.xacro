@@ -436,11 +436,11 @@
          its point-cloud driver can be checked independently. -->
     <xacro:if value="$(arg use_sim)">
         <xacro:mast_sensor_mount parent="mast_frame" include_lidar="false"
-                                 camera_pitch="${20.0 * pi / 180.0}"/>
+                                 camera_pitch="${20.0 * pi / 180.0}" camera_y="0.0"/>
     </xacro:if>
     <xacro:unless value="$(arg use_sim)">
         <xacro:mast_sensor_mount parent="mast_frame" include_lidar="false"
-                                 camera_pitch="${20.0 * pi / 180.0}"/>
+                                 camera_pitch="${20.0 * pi / 180.0}" camera_y="0.025"/>
     </xacro:unless>
     <!-- Preserve the measured -2 degree optical scan yaw. Align only the
          square housing visual/collision with the chassis for the demo. -->

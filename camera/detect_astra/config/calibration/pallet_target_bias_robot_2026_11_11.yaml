@@ -1,0 +1,11 @@
+# User supplied approximate camera eye offset relative to centered fork/chassis.
+# This REPLACES the old +0.020531 m lateral residual; never add both.
+# Forward/yaw corrections are copied from the prior experimental calibration.
+# Their independent absolute accuracy remains unconfirmed for real insertion.
+profile: pallet_target_bias_robot_2026_11_11
+status: approximate_mount_offset_not_independent_accuracy_proof
+forward_bias_m: 0.038429884910583446
+lateral_bias_m: 0.025
+face_yaw_bias_deg: 0.8962719685723746
+camera_eye_lateral_from_fork_center_m: 0.025
+previous_empirical_lateral_bias_replaced_m: 0.02053147743145625

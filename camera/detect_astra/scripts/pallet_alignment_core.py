@@ -19,7 +19,7 @@ def stationary_heading_command(current_yaw, goal_yaw, max_angular_rps):
 
 @dataclass(frozen=True)
 class AlignmentConfig:
-    standoff_m: float = 1.20
+    standoff_m: float = .020
     chassis_front_m: float = .3005
     fork_root_m: float = .3655
     distance_tolerance_m: float = .02

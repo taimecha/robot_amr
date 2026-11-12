@@ -4,7 +4,12 @@ import argparse
 import json
 import math
 from pathlib import Path
+import sys
 import time
+
+# Refuse the retired real mode even when the ROS interface package is not built.
+if __name__ == '__main__' and '--execute' in sys.argv[1:]:
+    raise SystemExit('Bộ căn cũ đã ngừng chạy thật; --execute không khởi động xe.')
 
 import rclpy
 from rclpy.node import Node
@@ -117,9 +122,9 @@ class MotionGuard:
 
 class PalletAlignmentNode(Node):
     def __init__(self, config=AlignmentConfig(), execute=False):
+        if execute:
+            raise RuntimeError('Bộ căn cũ đã ngừng chạy thật; chỉ dùng chế độ xem trước.')
         super().__init__('pallet_alignment')
-        if execute and config.allow_reverse:
-            raise ValueError('Lượt thử thật đầu chưa hỗ trợ lùi; đặt allow_reverse: false')
         self.core = AlignmentController(config)
         self.execute = execute
         self.pending_target = None
@@ -399,8 +404,10 @@ class PalletAlignmentNode(Node):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, default=ROOT/'config/pallet_alignment.yaml')
-    parser.add_argument('--execute', action='store_true', help='Cho phép gửi lệnh qua collision monitor; vẫn cần bấm bắt đầu')
+    parser.add_argument('--execute', action='store_true', help='Chế độ chạy thật cũ đã vô hiệu hóa')
     args, ros_args = parser.parse_known_args()
+    if args.execute:
+        parser.error('Bộ căn cũ đã ngừng chạy thật; dùng --execute sẽ không khởi động xe.')
     config = AlignmentConfig(**yaml.safe_load(args.config.read_text()))
     rclpy.init(args=ros_args)
     node = PalletAlignmentNode(config, execute=args.execute)

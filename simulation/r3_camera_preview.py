@@ -62,7 +62,21 @@ def locked_snapshot(session, calibration):
     if any(max(p[k] for p in poses)-min(p[k] for p in poses) > .01 for k in (0,1)):
         raise ValueError('waiting for stable RGB-D position')
     result=dict(targets[-1],pose=[statistics.median(p[0] for p in poses),statistics.median(p[1] for p in poses),wrap(yaw0+statistics.median(yaw))],
-                source='stationary_real_RGBD',raw_session_hash=digest(session))
+                source='stationary_real_RGBD',raw_session_hash=digest(session),yolo_off_ack=True)
+    if session['adapter'] == 'corrected_base_scalars':
+        offset = calibration['applied_bias']['lateral_bias_m']
+        if not math.isclose(offset, .025, abs_tol=1e-9):
+            raise ValueError('camera-to-fork lateral offset must be the single accepted +2.5 cm correction')
+        raw = [sample['camera_lateral_raw_m'] for sample in samples]
+        corrected = [sample['lateral_base_m'] for sample in samples]
+        if any(abs(a + offset - b) > 1e-4 for a, b in zip(raw, corrected)):
+            raise ValueError('lateral correction was added twice or did not match camera raw samples')
+        result['measurement_report'] = dict(
+            camera_lateral_raw_m=statistics.median(raw),
+            camera_mount_offset_m=offset,
+            fork_lateral_corrected_m=statistics.median(corrected),
+            forward_base_m=statistics.median(sample['forward_base_m'] for sample in samples),
+            entry_heading_deg=math.degrees(result['pose'][2] - session['start_odom'][2]))
     return result
 
 

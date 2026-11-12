@@ -17,6 +17,8 @@ def parse_args(role, argv=None):
     parser.add_argument('--correction-yaml', type=Path,
                         default=PROJECT / 'config/calibration/astra_pro_depth_x_skew_preview.yaml')
     parser.add_argument('--measurement-bias-yaml', type=Path)
+    parser.add_argument('--measurement-evidence-dir', type=Path,
+                        help='Buffer bounded RGB-D evidence; save it when locked target tracking pauses')
     parser.add_argument('--device', default='cpu')
     parser.add_argument('--conf', type=float, default=.60)
     parser.add_argument('--nms-iou', type=float, default=.30)

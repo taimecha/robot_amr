@@ -1,8 +1,10 @@
 # Triển khai r3-approved-lattice —08/11/2026
 
+> Cập nhật 11/11/2026: Người dùng muốn thử xe thật theo hình A→C→B mới nhất, dùng odom bám đường; LiDAR và RGB-D chỉ dừng vật cản, bỏ qua đúng vùng pallet đã khóa sau khi YOLO tắt. Bộ căn thật cũ đã vô hiệu hóa. Đã thêm bộ lọc scan và bộ bám odom cho lượt thử không nâng, nhưng chưa cho xe chạy: kiểm tra chỉ đọc bằng `python3 simulation/r3_real_preflight.py --plan simulation/output/r3_camera_measured_preview/centered_20261111_145707/plan_refined/frozen_plan.json` báo BLOCKED vì hình dùng pose nhập/hình học mô phỏng. Lượt thử NCNN cùng odom/LiDAR/RGB-D thấy pallet nhưng RGB-D mất dấu sau khi tắt YOLO; cổng xác nhận độ chính xác tuyệt đối vẫn chưa đạt. Đã sửa luồng nhận diện để YOLO tự tắt sau khi nhận diện/đo ổn định dù cổng hiệu chuẩn chưa đạt, nhưng vẫn giữ trạng thái `CALIBRATION_REQUIRED` và chặn chuyển động. Các kết quả Gazebo bên dưới thuộc lượt thử trước, không chứng nhận kế hoạch mới.
+
 > Cập nhật tiêu chí mô phỏng theo người dùng: chấp nhận phần tạo/bám quỹ đạo, sai số dừng dọc chỉ báo cáo và không chặn nghiệm thu phần bám. Giữ goal danh định gốc càng20mm, v≤0.15m/s, ngang≤20mm, góc≤0.5°. Nâng80mm chưa được miễn. Chạy xem: `./simulation/launch_r3_sim.sh world` rồi `./simulation/launch_r3_sim.sh run` ở terminal thứ hai.
 
-> Chỉ đạo mới của người dùng: **thiết bị thật để sau; kiểm tra mô phỏng đạt trước**. Giai đoạn hiện tại là SIMULATION_ONLY. Không coi kết nối camera/Pi là việc cần làm ngay. [Phân tích lỗi hiện tại](../simulation/output/r3_gazebo_final/failure_analysis.json).
+> Ghi chú lịch sử 08/11: **thiết bị thật để sau; kiểm tra mô phỏng đạt trước**. Chỉ đạo ngày 11/11 ở trên thay thế ghi chú này. [Phân tích lỗi mô phỏng cũ](../simulation/output/r3_gazebo_final/failure_analysis.json).
 
 Đã triển khai và chạy mô phỏng đúng chuỗi **Smac State Lattice vi sai/skid-steer → Nav2 Constrained Smoother cho approach → line cuối chính xác theo trục càng**. **Chưa nghiệm thu: Gazebo FAIL gap thực và lift; camera thật INCOMPLETE.** Không chạy robot thật, flash firmware, commit/push hoặc đổi bộ bám/PID. Các mục xóa cục bộ có sẵn trong git status vẫn được giữ nguyên.
 
@@ -62,9 +64,9 @@ Một lượt trung gian đã bị loại vì Gazebo cũ còn sống sau khi đ�
 
 ## Giới hạn và camera thật
 
-`simulation/r3/fixture.json` có nhãn SYNTHETIC_FIXTURE_NOT_REAL_CALIBRATION. X_F=0.3655m lấy từ repo; housing Y=0 và fork Y=-20mm chỉ là fixture, không là số đo T_BF thật. Tine widths53mm, centers±51mm,4 chân ở góc là hình học repo còn cần xác nhận. Pipeline/plots dùng cùng transform và hash; không cộng20mm vào pixel hoặc mặc định housing=optical.
+`simulation/r3/fixture.json` có nhãn SYNTHETIC_FIXTURE_NOT_REAL_CALIBRATION. X_F=0.3655m lấy từ repo; bản fixture hiện đặt fork Y=0 theo xác nhận càng nằm giữa khung xe và housing Y=+20mm theo quan hệ F-H=-20mm. Tọa độ mắt RGB/optical và T_BF thật vẫn chưa đo đầy đủ. Tine widths53mm, centers±51mm,4 chân ở góc là hình học repo còn cần xác nhận. Pipeline/plots dùng cùng transform và hash; không cộng20mm vào pixel hoặc mặc định housing=optical.
 
-Laptop chỉ thấy Microdia Integrated_Webcam_HD qua USB, chưa có Astra. Chưa nhận endpoint Pi/session camera để đo đứng yên. T_BC, housing reference, full T_BF thật và các mốc nhánh/chân còn thiếu; không dựng đường chạy thật từ fixture. Hồ sơ camera cũ có max sai số yaw khoảng0.7769°, chưa chứng minh0.5°. RGB-D simulation case cũng chưa chạy và được ghi INCOMPLETE riêng, không trộn với pose chuẩn.
+Ở lượt 08/11, laptop chỉ thấy Microdia Integrated_Webcam_HD qua USB. Đến 11/11, Astra đã chạy trên Pi và có phép đo đứng yên, nhưng chưa export được session RGB-D khóa hợp lệ cho r3; hình A→C→B hiện dùng pose nhập theo số đo. T_BC, housing reference, full T_BF thật và các mốc nhánh/chân còn thiếu; không dựng đường chạy thật từ fixture. Hồ sơ camera cũ có max sai số yaw khoảng0.7769°, chưa chứng minh0.5°. RGB-D simulation case cũng chưa chạy và được ghi INCOMPLETE riêng, không trộn với pose chuẩn.
 
 `simulation/r3_camera_preview.py` là adapter preview **không publisher drive/lift**, nhận session đo đứng yên đã export và calibration/geometry xác nhận. Nó tách optical SE(3) khỏi scalar đã hiệu chỉnh base, yêu cầu mẫu riêng sau YOLO off, khóa target/hash rồi lập planned-only. Chưa nối live acquisition lifecycle/mission launcher robot thật; các launch thật cũ vẫn là baseline, không trở thành r3-compliant.
 

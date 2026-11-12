@@ -7,6 +7,9 @@ import hashlib
 import json
 import math
 
+R3_MIN_STRAIGHT_CLEARANCE_M = .10
+R3_PLANNED_C_CLEARANCE_M = .15
+
 
 def wrap(a):
     return math.atan2(math.sin(a), math.cos(a))
@@ -40,6 +43,21 @@ def validate_geometry(g):
         raise ValueError('final HOME top must be74mm (trigger75mm minus settle1mm)')
 
 
+def real_geometry_mode(g, allow_provisional=False):
+    """Keep provisional hardware assumptions visible and opt-in at every process."""
+    if (g.get('confirmed_real_geometry') is True and not g.get('missing_real')
+            and g.get('provenance') != 'SYNTHETIC_FIXTURE_NOT_REAL_CALIBRATION'):
+        return 'confirmed'
+    if (allow_provisional and g.get('provenance') == 'USER_ACCEPTED_APPROXIMATE_REAL_TRIAL'
+            and g.get('approximate_real_trial') is True
+            and g.get('confirmed_real_geometry') is False
+            and 0 < g.get('max_speed', 1) <= .10 and g.get('max_lateral', 1) <= .009
+            and g.get('base_fork') == [.3655, 0., 0.]
+            and math.isclose(g.get('housing_y', float('nan')), .02, abs_tol=1e-9)):
+        return 'provisional'
+    raise ValueError('real geometry unconfirmed; provisional trial requires explicit --allow-provisional')
+
+
 def compose(a, b):
     c, s = math.cos(a[2]), math.sin(a[2])
     return (a[0]+c*b[0]-s*b[1], a[1]+s*b[0]+c*b[1], wrap(a[2]+b[2]))
@@ -65,6 +83,32 @@ def goal_base(target, geometry, gap=None):
 def errors(base, target, geometry):
     f = compose(inverse(target), fork_for_base(base, geometry))
     return {'gap_m': -f[0], 'ey_m': f[1], 'yaw_error_rad': wrap(f[2])}
+
+
+def validate_axis_lateral_residual(target, start):
+    """Verify the separately reported empirical axis shift was applied once."""
+    report = target.get('measurement_report') or {}
+    if 'pallet_axis_lateral_residual_m' not in report:
+        return  # Legacy frozen targets predate this explicit correction.
+    keys = ('pallet_axis_lateral_residual_m', 'forward_base_m',
+            'fork_lateral_corrected_m', 'entry_heading_deg',
+            'target_forward_after_axis_residual_m', 'target_lateral_after_axis_residual_m')
+    if any(not isinstance(report.get(k), (int, float)) or not math.isfinite(report[k]) for k in keys):
+        raise ValueError('empirical lateral correction report is incomplete')
+    residual = report['pallet_axis_lateral_residual_m']
+    if abs(residual) > .05 or not math.isclose(
+            (target.get('applied_bias') or {}).get('pallet_axis_lateral_residual_m', float('nan')),
+            residual, abs_tol=1e-9):
+        raise ValueError('empirical lateral correction provenance mismatch')
+    corrected = compose((report['forward_base_m'], report['fork_lateral_corrected_m'],
+                         math.radians(report['entry_heading_deg'])), (0., residual, 0.))
+    reported_xy = (report['target_forward_after_axis_residual_m'],
+                   report['target_lateral_after_axis_residual_m'])
+    expected = compose(start, corrected)
+    if (math.dist(corrected[:2], reported_xy) > 1e-7
+            or math.dist(expected[:2], target['pose'][:2]) > 1e-7
+            or abs(wrap(expected[2]-target['pose'][2])) > 1e-7):
+        raise ValueError('empirical axis correction was not applied exactly once')
 
 
 def rectangle(pose, bounds):

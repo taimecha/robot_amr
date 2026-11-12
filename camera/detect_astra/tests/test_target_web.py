@@ -200,7 +200,7 @@ class TargetWebIntegrationTest(unittest.TestCase):
         try:
             self.wait_for(lambda: publisher.get_subscription_count())
             payload = dict(execute=False, ready=True, active=False, state='IDLE', reason='Ready',
-                           ready_reason='', standoff_m=1.2, linear_mps=0., angular_rps=0.,
+                           ready_reason='', standoff_m=.02, linear_mps=0., angular_rps=0.,
                            errors=dict(distance_m=.3, lateral_m=.048, heading_deg=1.4))
             publisher.publish(String(data=json.dumps(payload)))
             self.wait_for(lambda: self.status().get('alignment', {}).get('available'))

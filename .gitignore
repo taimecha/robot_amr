@@ -11,3 +11,6 @@ __pycache__/
 *.pyc
 compile_commands.json
 .DS_Store
+
+# Generated simulation/trial logs, camera captures and trajectory previews.
+/simulation/output/

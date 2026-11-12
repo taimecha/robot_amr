@@ -67,6 +67,130 @@ class R3Tests(unittest.TestCase):
         self.assertEqual(follower.step(a,obstacle=True),(0.,0.))
         self.assertEqual(follower.step(a),(0.,0.));self.assertEqual(follower.state,'STOP_LATCHED')
 
+    def test_realistic_endpoint_switches_from_approach_to_straight(self):
+        target=(1.8,0.,0.)
+        c=goal_base(target,self.g,.535)
+        b=goal_base(target,self.g)
+        phases=[dict(type='APPROACH',poses=[(0.,0.,0.),c]),
+                dict(type='STRAIGHT',poses=[c,b])]
+        follower=FixedPlanFollower(phases,target,self.g)
+        follower.start(True)
+        # 0.9 mm short of C is well inside physical odom resolution.
+        near_c=(c[0]-.0009,c[1]+.003,math.radians(.456))
+        for _ in range(11):
+            follower.step(near_c)
+        self.assertEqual(follower.state,'STRAIGHT')
+        self.assertGreater(follower.step(near_c)[0],0.)
+
+    def test_c_rotates_before_straight_when_yaw_shifts_fork_laterally(self):
+        target=(1.8,0.,0.)
+        g=dict(self.g,max_lateral=.009)
+        c=goal_base(target,g,.535)
+        b=goal_base(target,g)
+        follower=FixedPlanFollower([dict(type='APPROACH',poses=[(0.,0.,0.),c]),
+                                   dict(type='STRAIGHT',poses=[c,b])],target,g)
+        follower.start(True)
+        misaligned=(c[0],c[1]+.001,math.radians(-2.))
+        self.assertGreater(abs(errors(misaligned,target,g)['ey_m']),g['max_lateral'])
+        for _ in range(11):
+            follower.step(misaligned)
+        self.assertEqual(follower.state,'ALIGN_YAW')
+        follower.step(misaligned)
+        self.assertNotEqual(follower.state,'STOP_LATCHED')
+        aligned=(c[0],c[1]+.001,c[2])
+        for _ in range(7):
+            follower.step(aligned)
+        self.assertEqual(follower.state,'STRAIGHT')
+        self.assertGreater(errors(aligned,target,g)['gap_m']-g['fork_length'],.10)
+
+    def test_real_c_waits_for_camera_before_straight(self):
+        target=(1.8,0.,0.)
+        c=goal_base(target,self.g,.535)
+        b=goal_base(target,self.g)
+        follower=FixedPlanFollower([dict(type='APPROACH',poses=[(0.,0.,0.),c]),
+                                   dict(type='STRAIGHT',poses=[c,b])],target,self.g)
+        follower.start(True)
+        near_c=(c[0]-.04,c[1]+.001,c[2]+math.radians(.46))
+        v,w=follower.step(near_c,c_verified=False)
+        self.assertEqual((v,w),(0.,0.))
+        self.assertEqual(follower.state,'C_SETTLE')
+        for _ in range(10):
+            v,w=follower.step(near_c,c_verified=False)
+        self.assertEqual((v,w),(0.,0.))
+        self.assertEqual(follower.state,'WAIT_C_RGBD')
+        follower.step(near_c,c_verified=True)
+        self.assertEqual(follower.state,'STRAIGHT')
+
+    def test_c_brake_does_not_hide_endpoint_overshoot(self):
+        target=(1.8,0.,0.)
+        c=goal_base(target,self.g,.535)
+        b=goal_base(target,self.g)
+        follower=FixedPlanFollower([dict(type='APPROACH',poses=[(0.,0.,0.),c]),
+                                   dict(type='STRAIGHT',poses=[c,b])],target,self.g)
+        follower.start(True)
+        cmd=follower.step((c[0]+.004,c[1],c[2]),c_verified=False)
+        self.assertEqual(cmd,(0.,0.))
+        self.assertEqual(follower.state,'STOP_LATCHED')
+        self.assertEqual(follower.reason,'phase endpoint overshot')
+
+    def test_straight_lead_in_stops_pure_pursuit_from_oversteering_yaw(self):
+        target=(2.,0.,0.)
+        g=dict(self.g,max_speed=.05,max_lateral=.009)
+        c=goal_base(target,g,.535)
+        b=goal_base(target,g)
+        phases=[dict(type='APPROACH',poses=[(0.,0.,0.),(c[0]-.12,0.,0.),c],
+                     straight_lead_in_m=.12),
+                dict(type='STRAIGHT',poses=[c,b])]
+        follower=FixedPlanFollower(phases,target,g)
+        follower.start(True)
+        aligned=(c[0]-.08,.003,0.)
+        v,w=follower.step(aligned)
+        self.assertGreater(v,0.)
+        self.assertAlmostEqual(w,0.)
+        self.assertEqual(follower.state,'APPROACH')
+        self.assertLess(follower.step((aligned[0],aligned[1],math.radians(.5)))[1],0.)
+
+    def test_terminal_stop_checks_odom_goal(self):
+        target=(1.8,0.,0.)
+        c=goal_base(target,self.g,.405)
+        b=goal_base(target,self.g)
+        follower=FixedPlanFollower([dict(type='STRAIGHT',poses=[c,b])],target,self.g)
+        follower.start(True)
+        follower.step((b[0]-.003,b[1],b[2]))
+        self.assertEqual(follower.state,'STOPPED')
+        self.assertLessEqual(abs(errors((b[0]-.003,b[1],b[2]),target,self.g)['gap_m']-self.g['stop_gap']),.005)
+
+    def test_pose_feedback_preserves_lateral_correction_in_straight_lead_in(self):
+        target=(2.,0.,0.)
+        g=dict(self.g,max_speed=.10,max_lateral=.009)
+        c=goal_base(target,g,.535)
+        b=goal_base(target,g)
+        phases=[dict(type='APPROACH',poses=[(0.,0.,0.),c],
+                     straight_lead_in_m=.12,tracking_controller='pose_feedback'),
+                dict(type='STRAIGHT',poses=[c,b])]
+        for lateral in (-.003,.003):
+            follower=FixedPlanFollower(phases,target,g)
+            follower.start(True)
+            v,w=follower.step((c[0]-.08,lateral,0.))
+            self.assertGreater(v,0.)
+            self.assertLess(w*lateral,0.)
+            self.assertEqual(follower.state,'APPROACH')
+        blocked=FixedPlanFollower(phases,target,g)
+        blocked.start(True)
+        self.assertEqual(blocked.step((c[0]-.08,.010,0.)),(0.,0.))
+        self.assertEqual(blocked.state,'STOP_LATCHED')
+
+    def test_approach_braking_avoids_low_speed_stall_near_c(self):
+        g=dict(self.g,max_speed=.05)
+        phases=[dict(type='APPROACH',poses=[(0.,0.,0.),(1.,0.,0.)])]
+        follower=FixedPlanFollower(phases,(3.,0.,0.),g)
+        follower.start(True)
+        follower.step((0.,0.,0.))
+        follower.v=follower.follower.v=.05
+        for _ in range(20):
+            v,_=follower.step((.98,0.,0.))
+        self.assertGreaterEqual(v,.03)
+
     def test_rotation_after_entry_refused(self):
         target=(1.8,0.,0.);p=goal_base(target,self.g,.30)
         follower=FixedPlanFollower([dict(type='ALIGN_YAW',poses=[p,(*p[:2],.1)])],target,self.g)

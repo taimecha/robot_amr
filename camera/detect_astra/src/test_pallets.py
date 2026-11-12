@@ -70,7 +70,7 @@ Mất dấu sẽ xóa số đo; không tự bật YOLO hoặc di chuyển xe.</p
 </section>
 <section class="camera-card" style="padding:18px">
 <h2>Căn xe trước pallet</h2>
-<p>Điểm dừng: gốc càng cách mặt pallet <b id="align-standoff">1,20 m</b>.
+<p>Đích danh định: gốc càng cách mặt pallet <b id="align-standoff">0,02 m</b>.
 Đạt khi |lệch ngang| &lt; 2 cm, |góc| &lt; 2°, sai số khoảng cách ≤ 2 cm.</p>
 <p id="align-mode" class="hint">Chưa kết nối bộ căn xe.</p>
 <p id="align-state" role="status">Đang chờ chương trình căn xe.</p>
@@ -141,7 +141,7 @@ function showVehicleAlignment(a){
     'Đang tắt YOLO và xác nhận các phép đo RGB + Depth mới…':available?
     (states[a.state]||a.state)+' · '+(a.ready?a.reason:(a.ready_reason||a.reason)):
     'Chạy scripts/open_pallet_alignment.sh để kết nối.';
-  document.getElementById('align-standoff').textContent=available?a.standoff_m.toFixed(2)+' m':'1,20 m';
+  document.getElementById('align-standoff').textContent=available?a.standoff_m.toFixed(2)+' m':'0,02 m';
   const e=available?a.errors:null;
   document.getElementById('align-distance').textContent=e?(e.distance_m*100).toFixed(1)+' cm':'—';
   document.getElementById('align-lateral').textContent=e?(e.lateral_m*100).toFixed(1)+' cm':'—';

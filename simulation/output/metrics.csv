@@ -1,8 +1,0 @@
-metric,value,unit,provenance
-acquisition_ready,10.2,s,synthetic simulation
-shadow_duration,15.3,s,synthetic simulation
-shadow_final_lateral_error,0.0,m,synthetic simulation
-quality_absolute_x_error,0.010217574904068716,m,synthetic simulation
-quality_absolute_x_budget_pass,False,bool,synthetic simulation
-plan_feasible,70,cases,synthetic simulation
-plan_reposition,3,cases,synthetic simulation

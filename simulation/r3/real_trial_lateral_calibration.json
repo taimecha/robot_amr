@@ -1,0 +1,9 @@
+{
+  "schema": "r3_axis_lateral_residual_v1",
+  "pallet_axis_lateral_residual_m": 0.0,
+  "frame": "pallet_entry_axis_positive_left",
+  "status": "disabled_after_failed_real_trials",
+  "source": "2026-11-12: +0.025 m empirical axis shift disabled after trials153159_MwqW6S and153415_nTMQCp; operator reports reversed ~3 cm left miss and worse heading. Original +0.025 m camera mount correction retained.",
+  "camera_mount_lateral_m_unchanged": 0.025,
+  "rejected_trial_value_m": 0.025
+}
